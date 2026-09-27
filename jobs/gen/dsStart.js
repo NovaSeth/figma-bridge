@@ -1,0 +1,44 @@
+//# opis: zasada kontenerow na stronie Start
+const ds = figma.root.children.find(p => p.name === 'Design System');
+await figma.setCurrentPageAsync(ds);
+for (const st of ['Regular','Medium','Semi Bold','Bold']) { try { await figma.loadFontAsync({ family: 'Inter', style: st }); } catch (e) {} }
+const kol = await figma.variables.getLocalVariableCollectionsAsync();
+const cLight = kol.find(c => c.name === 'Color');
+const V = {};
+for (const v of await figma.variables.getLocalVariablesAsync()) if (v.variableCollectionId === cLight.id) V[v.name] = v;
+const paint = (n, rgb) => figma.variables.setBoundVariableForPaint({ type: 'SOLID', color: rgb || { r: 1, g: 1, b: 1 } }, 'color', V[n]);
+const S = {}; (await figma.getLocalTextStylesAsync()).forEach(s => { S[s.name] = s; });
+const start = ds.children.find(c => c.type === 'SECTION' && c.name === 'Start');
+const NAZWA = 'Zasada: makieta w całości z systemu';
+for (const n of start.children.filter(c => c.name === NAZWA)) n.remove();
+const karta = figma.createFrame();
+karta.name = NAZWA;
+karta.layoutMode = 'VERTICAL';
+karta.itemSpacing = 10;
+karta.paddingTop = 24; karta.paddingBottom = 24; karta.paddingLeft = 24; karta.paddingRight = 24;
+karta.cornerRadius = 20;
+karta.fills = [paint('color/surface')];
+karta.resize(560, 10);
+karta.counterAxisSizingMode = 'FIXED';
+karta.primaryAxisSizingMode = 'AUTO';
+const dodaj = async (tekst, styl, kolor) => {
+  const t = figma.createText();
+  t.characters = tekst;
+  if (S[styl]) await t.setTextStyleIdAsync(S[styl].id);
+  t.fills = [paint(kolor)];
+  t.textAutoResize = 'HEIGHT';
+  karta.appendChild(t);
+  t.layoutSizingHorizontal = 'FILL';
+};
+await dodaj('Makieta w całości z systemu', 'headline/sm', 'color/on-surface');
+await dodaj('Żaden element widoczny na makiecie nie powstaje ręcznie. Każdy liść układu — wiersz, chip, pole, przycisk, dzień kalendarza — jest instancją komponentu. Jeśli czegoś brakuje, najpierw dochodzi komponent do systemu, potem trafia na makietę.', 'body/md', 'color/on-surface-variant');
+await dodaj('Kontenery', 'title/sm', 'color/on-surface');
+await dodaj('Ramki grupujące (List, Bottom sheet, karta miesiąca, siatka kalendarza) zostają ramkami, bo Figma nie pozwala wstawiać treści do instancji. Muszą jednak mieć tło, promień i cień związane z tokenami: color/surface, radius/*, elevation/*. Same trzymają wyłącznie instancje.', 'body/md', 'color/on-surface-variant');
+await dodaj('Teksty', 'title/sm', 'color/on-surface');
+await dodaj('Każdy tekst poza instancją ma styl tekstowy z systemu. Rozmiar wpisany z ręki jest błędem — jeśli brakuje skali, dochodzi nowy styl (tak powstały calendar/day-mini i calendar/day-mini-strong).', 'body/md', 'color/on-surface-variant');
+start.appendChild(karta);
+const dolne = start.children.filter(c => c !== karta).map(c => c.y + c.height);
+karta.x = 0;
+karta.y = dolne.length ? Math.max.apply(null, dolne) + 48 : 0;
+await shot(karta, { scale: 1, name: 'vDS-zasada' });
+return { karta: karta.name, h: Math.round(karta.height) };

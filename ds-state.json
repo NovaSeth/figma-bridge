@@ -1,0 +1,118 @@
+{
+ "runId": "flibrus-ds-2026-09-19",
+ "fileKey": "DVo0quwTkrkVdS300SL1de",
+ "phase": "done",
+ "completedSteps": [
+  "phase0",
+  "phase1",
+  "phase2",
+  "atoms",
+  "molecules",
+  "organisms",
+  "phase4-audit",
+  "design-md-export+lint"
+ ],
+ "constraints": [
+  "Starter: 1 tryb na kolekcję → kolekcje Color (Light) i Color Dark",
+  "max 3 strony → strona „Design System” z sekcjami",
+  "MCP za limitem → praca przez figma-bridge",
+  "ikony: font Material Icons",
+  "krój: Inter"
+ ],
+ "scope": {
+  "atoms": [
+   "Icon",
+   "Button",
+   "Chip",
+   "Avatar",
+   "Badge",
+   "Unread dot",
+   "Checkbox",
+   "Switch",
+   "Icon tile",
+   "Divider"
+  ],
+  "molecules": [
+   "Section heading",
+   "List row",
+   "Action card",
+   "Summary card",
+   "Segmented control",
+   "Tab item",
+   "Text field",
+   "Banner",
+   "Date nav"
+  ],
+  "organisms": [
+   "App header",
+   "Tab bar",
+   "Bottom sheet",
+   "Child menu"
+  ]
+ },
+ "tokensFile": "ds-tokens.json",
+ "entities": {
+  "collections": {
+   "Primitives": "VariableCollectionId:47:5213",
+   "Size": "VariableCollectionId:47:5303",
+   "Color": "by-name",
+   "Color Dark": "by-name"
+  },
+  "textStyles": [
+   "headline-lg",
+   "headline-md",
+   "headline-sm",
+   "title-lg",
+   "title-md",
+   "title-md-read",
+   "body-lg",
+   "body-md",
+   "body-sm",
+   "label-lg",
+   "label-md",
+   "label-sm",
+   "caption"
+  ],
+  "effectStyles": [
+   "elevation/menu",
+   "elevation/fab"
+  ],
+  "page": "Design System",
+  "sections": {
+   "Fundamenty": "47:5341",
+   "Atomy": "x=2000",
+   "Molekuły": "x=3300",
+   "Organizmy": "x=4900"
+  },
+  "components": {
+   "Icon/*": "26 komponentów wektorowych",
+   "Button": "47:5773",
+   "Chip": "47:5801",
+   "Avatar": "47:5811",
+   "Badge": "47:5815",
+   "Unread dot": "47:5820",
+   "Checkbox": "47:5828",
+   "Switch": "47:5836",
+   "Icon tile": "47:5852",
+   "Divider": "47:5859",
+   "Section heading": "47:5865",
+   "List row": "47:5950",
+   "Action card": "47:6012",
+   "Summary card": "47:6016",
+   "Segmented control": "47:6054",
+   "Tab item": "47:6070",
+   "Text field": "47:6090",
+   "Banner": "47:6094",
+   "Date nav": "47:6100",
+   "App header": "47:6137",
+   "Tab bar": "47:6156",
+   "Bottom sheet": "47:6191",
+   "Child menu": "47:6225",
+   "Cover top bar": "47:6246"
+  }
+ },
+ "export": {
+  "command": "node run.mjs jobs/ds-90-export.js > out/ds-export.json && node export-design-md.mjs && npx @google/design.md lint out/DESIGN.md",
+  "lint": "0 errors, 0 warnings (2026-09-20)"
+ }
+}

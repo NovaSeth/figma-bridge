@@ -1,0 +1,394 @@
+{
+ "button-primary": {
+  "backgroundColor": "{colors.inverse-surface}",
+  "textColor": "{colors.on-inverse-surface}",
+  "typography": "{typography.label/lg}",
+  "rounded": "{rounded.md}",
+  "padding": "{spacing.500}",
+  "height": "44px"
+ },
+ "button-secondary": {
+  "backgroundColor": "{colors.neutral-container}",
+  "textColor": "{colors.on-surface}",
+  "typography": "{typography.label/lg}",
+  "rounded": "{rounded.md}",
+  "padding": "{spacing.500}",
+  "height": "44px"
+ },
+ "button-text": {
+  "textColor": "{colors.primary}",
+  "typography": "{typography.label/lg}",
+  "height": "44px"
+ },
+ "chip-neutral": {
+  "backgroundColor": "{colors.neutral-container}",
+  "textColor": "{colors.on-surface-variant}",
+  "typography": "{typography.label/md}",
+  "rounded": "{rounded.sm}",
+  "padding": "{spacing.200}",
+  "height": "26px"
+ },
+ "chip-warning": {
+  "backgroundColor": "{colors.warning-container}",
+  "textColor": "{colors.warning}",
+  "typography": "{typography.label/md}",
+  "rounded": "{rounded.sm}",
+  "padding": "{spacing.200}",
+  "height": "26px"
+ },
+ "chip-success": {
+  "backgroundColor": "{colors.success-container}",
+  "textColor": "{colors.on-success-container}",
+  "typography": "{typography.label/md}",
+  "rounded": "{rounded.sm}",
+  "padding": "{spacing.200}",
+  "height": "26px"
+ },
+ "chip-info": {
+  "backgroundColor": "{colors.primary-container}",
+  "textColor": "{colors.on-primary-container}",
+  "typography": "{typography.label/md}",
+  "rounded": "{rounded.sm}",
+  "padding": "{spacing.200}",
+  "height": "26px"
+ },
+ "avatar": {
+  "backgroundColor": "{colors.primary-container}",
+  "textColor": "{colors.on-primary-container}",
+  "typography": "{typography.title/lg}",
+  "rounded": "{rounded.full}",
+  "size": "44px"
+ },
+ "badge": {
+  "backgroundColor": "{colors.badge}",
+  "textColor": "{colors.on-badge}",
+  "typography": "{typography.label/sm}",
+  "rounded": "{rounded.full}",
+  "height": "18px"
+ },
+ "unread-dot": {
+  "backgroundColor": "{colors.primary}",
+  "rounded": "{rounded.full}",
+  "size": "8px"
+ },
+ "checkbox": {
+  "rounded": "{rounded.full}",
+  "size": "26px"
+ },
+ "checkbox-checked": {
+  "backgroundColor": "{colors.primary}",
+  "textColor": "{colors.on-primary}",
+  "rounded": "{rounded.full}",
+  "size": "26px"
+ },
+ "switch-on": {
+  "backgroundColor": "{colors.primary}",
+  "rounded": "{rounded.full}",
+  "width": "51px",
+  "height": "31px"
+ },
+ "switch-off": {
+  "backgroundColor": "{colors.outline}",
+  "rounded": "{rounded.full}",
+  "width": "51px",
+  "height": "31px"
+ },
+ "icon-tile-primary": {
+  "backgroundColor": "{colors.primary}",
+  "textColor": "{colors.on-primary}",
+  "size": "32px"
+ },
+ "icon-tile-success": {
+  "backgroundColor": "{colors.success}",
+  "textColor": "{colors.on-primary}",
+  "size": "32px"
+ },
+ "icon-tile-warning": {
+  "backgroundColor": "{colors.warning-strong}",
+  "textColor": "{colors.on-primary}",
+  "size": "32px"
+ },
+ "icon-tile-neutral": {
+  "backgroundColor": "{colors.neutral-container}",
+  "textColor": "{colors.on-surface-variant}",
+  "size": "32px"
+ },
+ "divider": {
+  "backgroundColor": "{colors.outline-variant}",
+  "height": "1px"
+ },
+ "section-heading": {
+  "textColor": "{colors.on-surface}",
+  "typography": "{typography.title/lg}"
+ },
+ "list-row": {
+  "backgroundColor": "{colors.surface}",
+  "textColor": "{colors.on-surface}",
+  "typography": "{typography.title/md}",
+  "padding": "{spacing.300}"
+ },
+ "list-row-read": {
+  "backgroundColor": "{colors.surface}",
+  "textColor": "{colors.on-surface}",
+  "typography": "{typography.title/md-read}",
+  "padding": "{spacing.300}"
+ },
+ "action-card": {
+  "backgroundColor": "{colors.surface}",
+  "textColor": "{colors.on-surface}",
+  "typography": "{typography.title/md}",
+  "rounded": "{rounded.xl}",
+  "padding": "{spacing.400}"
+ },
+ "summary-card": {
+  "backgroundColor": "{colors.primary-container}",
+  "textColor": "{colors.on-primary-container}",
+  "typography": "{typography.headline/sm}",
+  "rounded": "{rounded.2xl}",
+  "padding": "{spacing.400}"
+ },
+ "summary-card-detail": {
+  "backgroundColor": "{colors.primary-container}",
+  "textColor": "{colors.summary-secondary}",
+  "typography": "{typography.body/md}"
+ },
+ "segmented-control": {
+  "backgroundColor": "{colors.neutral-container}",
+  "textColor": "{colors.on-surface-variant}",
+  "typography": "{typography.label/md}",
+  "rounded": "{rounded.md}",
+  "height": "48px"
+ },
+ "segmented-control-active": {
+  "backgroundColor": "{colors.surface}",
+  "textColor": "{colors.on-surface}",
+  "typography": "{typography.label/md}",
+  "height": "44px"
+ },
+ "tab-item": {
+  "textColor": "{colors.on-surface-variant}",
+  "typography": "{typography.label/sm}"
+ },
+ "tab-item-active": {
+  "backgroundColor": "{colors.primary-container}",
+  "textColor": "{colors.on-primary-container}",
+  "typography": "{typography.label/sm}",
+  "rounded": "{rounded.full}"
+ },
+ "text-field": {
+  "backgroundColor": "{colors.background}",
+  "textColor": "{colors.on-surface}",
+  "typography": "{typography.body/md}",
+  "rounded": "{rounded.lg}",
+  "height": "48px"
+ },
+ "text-field-error": {
+  "backgroundColor": "{colors.background}",
+  "textColor": "{colors.error}",
+  "typography": "{typography.label/md}"
+ },
+ "banner": {
+  "backgroundColor": "{colors.success-container}",
+  "textColor": "{colors.on-success-container}",
+  "typography": "{typography.label/lg}",
+  "rounded": "{rounded.lg}",
+  "padding": "{spacing.300}"
+ },
+ "app-header": {
+  "backgroundColor": "{colors.background}",
+  "textColor": "{colors.on-surface}",
+  "typography": "{typography.headline/lg}",
+  "padding": "{spacing.500}"
+ },
+ "tab-bar": {
+  "backgroundColor": "{colors.surface-bar}",
+  "textColor": "{colors.on-surface-variant}",
+  "typography": "{typography.label/sm}"
+ },
+ "bottom-sheet": {
+  "backgroundColor": "{colors.surface}",
+  "textColor": "{colors.on-surface}",
+  "typography": "{typography.body/lg}",
+  "rounded": "{rounded.2xl}",
+  "padding": "{spacing.500}"
+ },
+ "child-menu": {
+  "backgroundColor": "{colors.surface}",
+  "textColor": "{colors.on-surface}",
+  "typography": "{typography.title/md}",
+  "rounded": "{rounded.xl}"
+ },
+ "cover-top-bar": {
+  "backgroundColor": "{colors.background}",
+  "textColor": "{colors.on-surface}",
+  "typography": "{typography.headline/lg}",
+  "padding": "{spacing.500}"
+ },
+ "button-outline": {
+  "textColor": "{colors.on-surface}",
+  "typography": "{typography.label/lg}",
+  "rounded": "{rounded.full}",
+  "padding": "{spacing.500}",
+  "height": "44px"
+ },
+ "button-disabled": {
+  "backgroundColor": "{colors.disabled-container}",
+  "textColor": "{colors.on-surface-variant}",
+  "typography": "{typography.label/lg}",
+  "rounded": "{rounded.md}",
+  "height": "44px"
+ },
+ "fab": {
+  "backgroundColor": "{colors.inverse-surface}",
+  "textColor": "{colors.on-inverse-surface}",
+  "typography": "{typography.title/sm}",
+  "rounded": "{rounded.xl}",
+  "height": "52px"
+ },
+ "progress-bar": {
+  "backgroundColor": "{colors.summary-track}",
+  "rounded": "{rounded.full}",
+  "height": "6px"
+ },
+ "progress-bar-fill": {
+  "backgroundColor": "{colors.primary}",
+  "rounded": "{rounded.full}",
+  "height": "6px"
+ },
+ "scrim": {
+  "backgroundColor": "{colors.scrim}"
+ },
+ "grabber": {
+  "backgroundColor": "{colors.outline}",
+  "rounded": "{rounded.full}",
+  "width": "36px",
+  "height": "5px"
+ },
+ "feed-row": {
+  "backgroundColor": "{colors.surface}",
+  "textColor": "{colors.on-surface}",
+  "typography": "{typography.title/md}",
+  "padding": "{spacing.300}"
+ },
+ "feed-row-read": {
+  "backgroundColor": "{colors.surface}",
+  "textColor": "{colors.on-surface}",
+  "typography": "{typography.title/md-read}",
+  "padding": "{spacing.300}"
+ },
+ "message-card": {
+  "backgroundColor": "{colors.surface}",
+  "textColor": "{colors.on-surface}",
+  "typography": "{typography.body/md}",
+  "rounded": "{rounded.xl}",
+  "padding": "{spacing.400}"
+ },
+ "message-card-own": {
+  "backgroundColor": "{colors.primary-container}",
+  "textColor": "{colors.on-primary-container}",
+  "typography": "{typography.body/md}",
+  "rounded": "{rounded.xl}",
+  "padding": "{spacing.400}"
+ },
+ "quote": {
+  "backgroundColor": "{colors.background}",
+  "textColor": "{colors.on-surface-variant}",
+  "typography": "{typography.body/sm}",
+  "rounded": "{rounded.lg}",
+  "padding": "{spacing.400}"
+ },
+ "kpi-card": {
+  "backgroundColor": "{colors.surface}",
+  "textColor": "{colors.success}",
+  "typography": "{typography.headline/lg}",
+  "rounded": "{rounded.xl}",
+  "padding": "{spacing.400}"
+ },
+ "static-field": {
+  "textColor": "{colors.on-surface}",
+  "typography": "{typography.title/sm}"
+ },
+ "empty-state": {
+  "textColor": "{colors.on-surface-variant}",
+  "typography": "{typography.body/md}",
+  "padding": "{spacing.800}"
+ },
+ "disclosure": {
+  "textColor": "{colors.on-surface}",
+  "typography": "{typography.title/sm}",
+  "height": "44px"
+ },
+ "completed-row": {
+  "backgroundColor": "{colors.surface}",
+  "textColor": "{colors.on-surface-variant}",
+  "typography": "{typography.body/md}",
+  "padding": "{spacing.250}"
+ },
+ "calendar-event-lesson": {
+  "backgroundColor": "{colors.primary-container}",
+  "textColor": "{colors.on-primary-container}",
+  "typography": "{typography.label/md}",
+  "rounded": "{rounded.sm}",
+  "padding": "{spacing.200}"
+ },
+ "calendar-event-own": {
+  "backgroundColor": "{colors.success-container}",
+  "textColor": "{colors.on-success-container}",
+  "typography": "{typography.label/md}",
+  "rounded": "{rounded.sm}",
+  "padding": "{spacing.200}"
+ },
+ "calendar-event-task": {
+  "backgroundColor": "{colors.warning-container}",
+  "textColor": "{colors.warning}",
+  "typography": "{typography.label/md}",
+  "rounded": "{rounded.sm}",
+  "padding": "{spacing.200}"
+ },
+ "calendar-event-school": {
+  "backgroundColor": "{colors.neutral-container}",
+  "textColor": "{colors.on-surface}",
+  "typography": "{typography.label/md}",
+  "rounded": "{rounded.sm}",
+  "padding": "{spacing.200}"
+ },
+ "banner-warning": {
+  "backgroundColor": "{colors.warning-container}",
+  "textColor": "{colors.warning}",
+  "typography": "{typography.label/lg}",
+  "rounded": "{rounded.lg}",
+  "padding": "{spacing.300}"
+ },
+ "banner-info": {
+  "backgroundColor": "{colors.primary-container}",
+  "textColor": "{colors.on-primary-container}",
+  "typography": "{typography.label/lg}",
+  "rounded": "{rounded.lg}",
+  "padding": "{spacing.300}"
+ },
+ "sheet-header": {
+  "backgroundColor": "{colors.surface}",
+  "textColor": "{colors.on-surface-variant}",
+  "typography": "{typography.label/sm}",
+  "rounded": "{rounded.2xl}"
+ },
+ "sheet-actions": {
+  "backgroundColor": "{colors.surface}",
+  "padding": "{spacing.400}"
+ },
+ "refresh-indicator": {
+  "textColor": "{colors.on-surface-variant}",
+  "typography": "{typography.label/sm}",
+  "height": "48px"
+ },
+ "button-pressed": {
+  "backgroundColor": "{colors.state-pressed}",
+  "rounded": "{rounded.md}",
+  "height": "44px"
+ },
+ "focus-ring": {
+  "backgroundColor": "{colors.focus}",
+  "rounded": "{rounded.lg}",
+  "height": "2px"
+ }
+}

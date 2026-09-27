@@ -1,0 +1,175 @@
+<style>
+  :root{color-scheme:light dark}
+  html,body{margin:0;background:var(--figma-color-bg,#fff)}
+  #root{padding:12px 14px;box-sizing:border-box;display:flex;flex-direction:column;gap:6px;
+    font:12px/1.35 Inter,system-ui,-apple-system,sans-serif;color:var(--figma-color-text,#1e1e1e);background:var(--figma-color-bg,#fff);-webkit-font-smoothing:antialiased}
+  .row{display:flex;align-items:center;gap:7px;min-width:0}
+  .brand{position:relative;flex:none;width:18px;height:18px;display:block}
+  .mark{width:18px;height:18px;display:block}
+  .dot{position:absolute;right:-3px;bottom:-2px;width:8px;height:8px;border-radius:50%;background:var(--figma-color-icon-tertiary,#b3b3b3);box-shadow:0 0 0 2px var(--figma-color-bg,#fff)}
+  .ok .dot{background:var(--figma-color-icon-success,#14ae5c)}
+  .busy .dot{background:var(--figma-color-icon-brand,#0d99ff)}
+  .err .dot{background:var(--figma-color-icon-danger,#f24822)}
+  #now{flex:1;min-width:0;font-size:13px;font-weight:600;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  #side{flex:none;align-self:flex-start;color:var(--figma-color-text-tertiary,#8c8c8c);font-variant-numeric:tabular-nums}
+  /* Pasek: postęp planu (wypełnienie) i ruch, gdy zadanie właśnie pracuje w pliku. */
+  /* Czekanie: pulsująca kropka i brak paska. Pasek widać tylko, gdy trwa zadanie z planu albo krok w pliku. */
+  .ok .dot{animation:blink 1.8s ease-in-out infinite}
+  @keyframes blink{50%{opacity:.25}}
+  /* Jeden pasek na całość: wypełnienie to postęp planu razem z krokiem, który właśnie trwa. */
+  .bar{display:none;position:relative;height:8px;border-radius:4px;background:var(--figma-color-bg-tertiary,#e6e6e6);overflow:hidden}
+  .bar.on{display:block}
+  #fill{position:absolute;inset:0 auto 0 0;width:0;transition:width .45s cubic-bezier(.4,0,.2,1);border-radius:4px;background:var(--figma-color-bg-brand,#0d99ff);overflow:hidden}
+  /* Przebłysk po wypełnieniu: widać, że praca trwa, nawet gdy procent stoi w miejscu. */
+  #sheen{position:absolute;top:0;bottom:0;left:0;width:45%;display:none;
+    background:linear-gradient(90deg,rgba(255,255,255,0) 0%,rgba(255,255,255,.55) 50%,rgba(255,255,255,0) 100%)}
+  /* Gdy planu nie ma, sam pasek biegnie po torze — inaczej stałby pusty. */
+  #run{position:absolute;top:0;bottom:0;left:0;width:32%;border-radius:4px;display:none;background:var(--figma-color-bg-brand,#0d99ff);opacity:.45}
+  .bar.working #sheen{display:block;animation:sheen 1.4s linear infinite}
+  .bar.indeterminate #run{display:block;animation:run 1.3s ease-in-out infinite}
+  @keyframes sheen{from{transform:translateX(-120%)}to{transform:translateX(320%)}}
+  @keyframes run{from{transform:translateX(-110%)}to{transform:translateX(350%)}}
+  @media (prefers-reduced-motion:reduce){.bar.working #sheen,.bar.indeterminate #run{animation:none}.bar.indeterminate #run{width:100%;opacity:.2}.ok .dot{animation:none}}
+  #last{color:var(--figma-color-text-secondary,#666);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #toggle{display:none;align-items:center;gap:4px;margin:2px 0 0;padding:6px 0 0;border:0;border-top:1px solid var(--figma-color-border,#e6e6e6);background:none;color:var(--figma-color-text-secondary,#666);font:inherit;font-weight:600;text-align:left;cursor:pointer;width:100%}
+  #toggle::before{content:"▾";display:inline-block;width:10px}
+  #toggle.closed::before{content:"▸"}
+  /* Lista tasków przewija się sama, żeby status i pasek zostały widoczne (~7 pozycji). */
+  #plan{list-style:none;margin:0;padding:0 2px 0 0;max-height:186px;overflow-y:auto;overscroll-behavior:contain}
+  #plan::-webkit-scrollbar{width:6px}
+  #plan::-webkit-scrollbar-thumb{background:var(--figma-color-bg-tertiary,#e6e6e6);border-radius:3px}
+  #plan::-webkit-scrollbar-track{background:transparent}
+  #plan li{display:flex;gap:7px;align-items:baseline;padding:2px 0;color:var(--figma-color-text-secondary,#666);max-height:4em;overflow:hidden;opacity:1;transition:opacity .35s ease,max-height .45s ease,padding .45s ease}
+  #plan li.entering,#plan li.leaving{opacity:0;max-height:0;padding-top:0;padding-bottom:0}
+  @media (prefers-reduced-motion:reduce){#plan li{transition:none}}
+  #plan li::before{content:"";flex:none;width:8px;height:8px;border-radius:50%;box-sizing:border-box;border:1.5px solid var(--figma-color-icon-tertiary,#b3b3b3);transform:translateY(1px)}
+  #plan li.done{color:var(--figma-color-text-tertiary,#8c8c8c);text-decoration:line-through}
+  #plan li.done::before{border-color:var(--figma-color-icon-success,#14ae5c);background:var(--figma-color-icon-success,#14ae5c)}
+  #plan li.active{color:var(--figma-color-text,#1e1e1e);font-weight:600}
+  #plan li.active::before{border-color:var(--figma-color-icon-brand,#0d99ff);background:var(--figma-color-icon-brand,#0d99ff)}
+</style>
+<div id="root">
+<div class="row" id="state"><span class="brand"><svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path clip-rule="evenodd" fill-rule="evenodd" fill="#D97757" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z"/></svg><span class="dot"></span></span><span id="now">Łączę z mostem</span><span id="side"></span></div>
+<div class="bar" id="bar"><span id="fill"><span id="sheen"></span></span><span id="run"></span></div>
+<div id="last">Zostaw to okno otwarte</div>
+<button id="toggle" type="button"></button>
+<ul id="plan"></ul>
+</div>
+<script>
+  const BASE = 'http://localhost:8765', TOKEN = '__TOKEN__';
+  const H = { 'X-Bridge-Token': TOKEN, 'Content-Type': 'application/json' };
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const $ = id => document.getElementById(id);
+  const secs = ms => (ms / 1000).toFixed(1).replace('.', ',') + ' s';
+  const b64 = bytes => { let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(s); };
+  let ticker = null, tasks = [], open = true, status = { kind: '', text: 'Łączę z mostem' }, jobProgress = null;
+  let note = 'Zostaw to okno otwarte';
+  // Znacznik ostatniego ruchu: zmiana planu albo krok w pliku. Po nim liczy się cisza.
+  let ostatniRuch = Date.now();
+  const running = new Map();
+  // Wysokość liczona po treści (#root), nie po body: body nigdy nie jest niższe niż okno, więc okno by się nie kurczyło.
+  // Płynna zmiana wysokości okna: cel z treści (#root), dojście animowane klatka po klatce.
+  let winH = 0, targetH = 0, tweening = false;
+  const tween = () => { const d = targetH - winH; if (Math.abs(d) < 0.5) { winH = targetH; tweening = false; parent.postMessage({ pluginMessage: { type: 'resize', height: Math.round(winH) } }, '*'); return; }
+    winH += d * 0.22; parent.postMessage({ pluginMessage: { type: 'resize', height: Math.round(winH) } }, '*'); requestAnimationFrame(tween); };
+  const fit = () => requestAnimationFrame(() => { const h = Math.ceil($('root').getBoundingClientRect().height); if (Math.abs(h - targetH) < 1) return; targetH = h;
+    if (!winH) { winH = h; parent.postMessage({ pluginMessage: { type: 'resize', height: h } }, '*'); return; }
+    if (!tweening) { tweening = true; requestAnimationFrame(tween); } });
+
+  // Góra okna: zbiorczy stan pracy, nie nazwa zadania — równolegle potrafi biec wiele kroków naraz.
+  // „Analizuję” gaśnie po CISZA ms bez ruchu: krok zostawiony jako aktywny nie ma udawać, że coś się dzieje.
+  const CISZA = 5 * 60 * 1000;
+  const phrase = (busy, active) => {
+    if (busy) return running.size > 1 ? 'Pracuję nad ' + running.size + ' rzeczami' : 'Pracuję';
+    if (status.kind === 'err') return status.text;
+    const swiezy = Date.now() - ostatniRuch < CISZA;
+    if (active && swiezy) return 'Analizuję';
+    if (active) return 'Krok czeka na mnie';
+    if (tasks.length && tasks.every(t => t.state === 'done')) return 'Gotowe';
+    if (tasks.length) return 'Czekam na kolejny krok';
+    return status.text;
+  };
+  const render = () => {
+    const active = tasks.find(t => t.state === 'active'), done = tasks.filter(t => t.state === 'done').length;
+    const busy = running.size > 0;
+    $('state').className = 'row ' + (busy ? 'busy' : active ? 'busy planned' : status.kind);
+    $('now').textContent = phrase(busy, active);
+    // Jeden pasek na wszystko: zrobione kroki planu plus ułamek kroku, który właśnie trwa.
+    const swiezy = Date.now() - ostatniRuch < CISZA;
+    const step = busy ? (jobProgress == null ? 0.35 : Math.max(0.1, jobProgress)) : active && swiezy ? 0.12 : 0;
+    const value = tasks.length ? Math.min(1, (done + (active ? step : 0)) / tasks.length) : busy ? step : 0;
+    const bar = $('bar');
+    bar.className = 'bar' + (tasks.length || busy ? ' on' : '') + (busy || (active && swiezy) ? ' working' : '') + (!tasks.length && busy ? ' indeterminate' : '');
+    const pct = Math.round(value * 100);
+    $('fill').style.width = pct + '%';
+    // Druga linia też mówi o całości; własny komunikat pokazuję tylko, gdy nie ma planu albo poszło coś nie tak.
+    $('last').textContent = status.kind === 'err' || !tasks.length ? note : done + ' z ' + tasks.length + ' kroków · ' + pct + '%';
+    const tg = $('toggle'); tg.style.display = tasks.length ? 'flex' : 'none'; tg.className = open ? '' : 'closed';
+    tg.textContent = 'Plan: ' + done + ' z ' + tasks.length + (done === tasks.length && tasks.length ? ', gotowe' : '');
+    // Lista z kluczami: nowe pozycje wjeżdżają, zakończone po chwili płynnie znikają.
+    const ul = $('plan'); ul.style.display = open && (tasks.length || ul.children.length) ? 'block' : 'none';
+    const have = new Map([...ul.children].map(li => [li.dataset.key, li]));
+    tasks.forEach((t, i) => { let li = have.get(t.text); if (!li) { li = document.createElement('li'); li.dataset.key = t.text; li.textContent = t.text; li.className = t.state + ' entering'; ul.insertBefore(li, ul.children[i] || null); requestAnimationFrame(() => requestAnimationFrame(() => li.classList.remove('entering'))); } else { li.className = t.state; have.delete(t.text); } });
+    for (const li of have.values()) { if (li.classList.contains('leaving')) continue; li.classList.add('leaving'); setTimeout(() => { li.remove(); fit(); }, 480); }
+    fit(); setTimeout(fit, 500);
+  };
+  $('toggle').onclick = () => { open = !open; render(); };
+  const startClock = () => { const t0 = Date.now(); clearInterval(ticker); const tick = () => { $('side').textContent = Math.floor((Date.now() - t0) / 1000) + ' s'; }; tick(); ticker = setInterval(tick, 1000); };
+  const stopClock = () => { clearInterval(ticker); $('side').textContent = ''; };
+
+  onmessage = async e => {
+    const m = e.data && e.data.pluginMessage; if (!m) return;
+    if (m.type === 'context') { fetch(BASE + '/hello', { method: 'POST', headers: H, body: JSON.stringify({ fileKey: m.fileKey, fileName: m.fileName }) }).catch(() => {}); return; }
+    if (m.type === 'progress') { jobProgress = Math.max(0, Math.min(1, m.value)); note = 'W toku: ' + Math.round(jobProgress * 100) + '%'; render(); return; }
+    if (m.type !== 'result') return;
+    const job = running.get(m.id) || { label: 'zadanie', t: Date.now() }; running.delete(m.id); jobProgress = null;
+    const images = (m.images || []).map(i => ({ name: i.name, b64: b64(i.bytes) }));
+    try {
+      await fetch(BASE + '/result', { method: 'POST', headers: H, body: JSON.stringify({ id: m.id, ok: m.ok, result: m.result, error: m.error, images }) });
+      note = (m.ok ? 'Krok gotowy (' : 'Krok nieudany (') + secs(Date.now() - job.t) + ')';
+      status = m.ok ? { kind: 'ok', text: 'Czekam na zadania' } : { kind: 'err', text: 'Ostatni krok nieudany' };
+    } catch (err) { status = { kind: 'err', text: 'Nie odesłałem wyniku' }; note = err.message; }
+    if (!running.size) stopClock();
+    render();
+  };
+
+  let byloSwieze = true;
+  setInterval(async () => {
+    try {
+      const r = await (await fetch(BASE + '/plan', { headers: H })).json();
+      if (JSON.stringify(r.tasks) !== JSON.stringify(tasks)) { tasks = r.tasks; ostatniRuch = Date.now(); byloSwieze = true; render(); return; }
+    } catch (err) {}
+    // Sama cisza też zmienia napis, więc odświeżam okno w chwili, gdy „Analizuję” ma zgasnąć.
+    const swiezeTeraz = Date.now() - ostatniRuch < CISZA;
+    if (swiezeTeraz !== byloSwieze) { byloSwieze = swiezeTeraz; render(); }
+  }, 2000);
+  parent.postMessage({ pluginMessage: { type: 'ready' } }, '*');
+  (async () => {
+    try { const r = await fetch(BASE + '/status', { headers: H }); if (r.ok) { status = { kind: 'ok', text: 'Czekam na zadania' }; render(); } } catch (err) {}
+    for (;;) {
+      try {
+        const r = await fetch(BASE + '/next', { headers: H });
+        /*
+         * Odpowiedź ZNACZY, że most żyje — i musi skasować poprzedni błąd.
+         * Wcześniej powrót do zielonego był obwarowany `status.kind !== 'err'`,
+         * czyli raz ustawiony błąd zostawał NA ZAWSZE: wtyczka odpytywała serwer
+         * co dwie sekundy, dostawała odpowiedź, a okno dalej pokazywało „Serwer
+         * mostu nie działa" aż do przeładowania wtyczki. Wskaźnik stanu, który
+         * nie wraca do zielonego, jest gorszy niż jego brak — kłamie w jedyną
+         * stronę, w którą nie wolno.
+         */
+        if ((r.status === 200 || r.status === 204) && status.kind === 'err') {
+          status = { kind: 'ok', text: 'Czekam na zadania' };
+          note = 'Zostaw to okno otwarte';
+        }
+        if (r.status === 200) {
+          const job = await r.json(); job.label = job.label || 'zadanie';
+          running.set(job.id, { label: job.label, t: Date.now() }); jobProgress = null; ostatniRuch = Date.now();
+          note = running.size > 1 ? running.size + ' kroki w toku' : 'Krok w toku'; startClock(); render();
+          parent.postMessage({ pluginMessage: { type: 'job', id: job.id, code: job.code } }, '*');
+        } else if (r.status === 204) { if (!running.size) { status = { kind: 'ok', text: 'Czekam na zadania' }; render(); } }
+        else { status = { kind: 'err', text: 'Most odrzucił połączenie (' + r.status + ')' }; note = 'Uruchom wtyczkę ponownie'; render(); await sleep(3000); }
+      } catch (err) { status = { kind: 'err', text: 'Serwer mostu nie działa' }; note = 'Uruchom: node server.mjs'; render(); await sleep(2000); }
+    }
+  })();
+</script>
