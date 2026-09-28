@@ -2,7 +2,7 @@
 // Start: node server.mjs      Zadanie: node run.mjs skrypt.js
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -33,25 +33,40 @@ const send = (res, code, body) => { res.writeHead(code, { ...cors, 'Content-Type
 const readBody = req => new Promise((ok, fail) => { const parts = []; req.on('data', c => parts.push(c)); req.on('end', () => { try { ok(JSON.parse(Buffer.concat(parts).toString('utf8') || '{}')); } catch (e) { fail(e); } }); });
 const handOut = () => { if (poller && queue.length) { const { res, timer } = poller; poller = null; clearTimeout(timer); send(res, 200, queue.shift()); } };
 
-// Komentarze: Plugin API ich nie widzi, więc czytamy je oficjalnym REST API (token osobisty w figma-token.txt, zakres file_comments:read).
-const patFile = join(here, 'figma-token.txt'), seenFile = join(here, 'seen-comments.json'), watchFile = join(here, 'watch.json');
+// Komentarze: Plugin API ich nie widzi, więc czytamy je oficjalnym REST API (tokeny osobiste w figma-token*.txt, zakres file_comments:read).
+// Kilka tokenów = kilka kont: dla każdego pliku próbujemy po kolei i zapamiętujemy ten, który ma do niego dostęp.
+const seenFile = join(here, 'seen-comments.json'), watchFile = join(here, 'watch.json');
+const patFiles = () => readdirSync(here).filter(f => /^figma-token.*\.txt$/.test(f)).sort();
+const patFor = {};
 let commentsError = null, commentsCheckedAt = null;
-const commentsState = () => !existsSync(patFile) ? 'wyłączone (brak figma-token.txt)' : commentsError ? 'błąd: ' + commentsError : commentsCheckedAt ? 'działa' : 'startuje';
+const commentsState = () => !patFiles().length ? 'wyłączone (brak figma-token*.txt)' : commentsError ? 'błąd: ' + commentsError : commentsCheckedAt ? 'działa' : 'startuje';
+async function fetchComments(key) {
+  const files = patFiles(), order = patFor[key] ? [patFor[key], ...files.filter(f => f !== patFor[key])] : files;
+  let r;
+  for (const f of order) {
+    r = await fetch('https://api.figma.com/v1/files/' + key + '/comments', { headers: { 'X-Figma-Token': readFileSync(join(here, f), 'utf8').trim() } });
+    if (r.ok) { patFor[key] = f; return r; }
+    if (r.status === 429) return r;
+  }
+  return r;
+}
 async function pollComments() {
-  if (!existsSync(patFile)) return;
+  if (!patFiles().length) return;
   const keys = new Set(existsSync(watchFile) ? JSON.parse(readFileSync(watchFile, 'utf8')).fileKeys || [] : []);
   if (plugin.fileKey) keys.add(plugin.fileKey);
   const seen = existsSync(seenFile) ? JSON.parse(readFileSync(seenFile, 'utf8')) : {};
   for (const key of keys) {
     try {
-      const r = await fetch('https://api.figma.com/v1/files/' + key + '/comments', { headers: { 'X-Figma-Token': readFileSync(patFile, 'utf8').trim() } });
-      if (!r.ok) { commentsError = 'HTTP ' + r.status + (r.status === 403 ? ' (token bez zakresu file_comments:read albo bez dostępu do pliku)' : r.status === 429 ? ' (limit zapytań)' : ''); continue; }
+      const r = await fetchComments(key);
+      if (!r.ok) { commentsError = key + ': HTTP ' + r.status + (r.status === 403 || r.status === 404 ? ' (żaden token nie ma zakresu file_comments:read albo dostępu do pliku)' : r.status === 429 ? ' (limit zapytań)' : ''); continue; }
       const list = (await r.json()).comments || [], first = !seen[key];
       seen[key] = seen[key] || {};
       for (const c of list) {
         if (seen[key][c.id]) continue;
         seen[key][c.id] = 1;
-        if (first || c.resolved_at) continue; // pierwsze uruchomienie tylko zapamiętuje stan
+        if (c.resolved_at) continue;
+        // pierwsze odpytanie pliku: otwarte wątki trafiają do planu, ale bez zdarzeń (żeby nie budzić Claude'a starymi komentarzami)
+        if (first) { if (!c.parent_id && !plan.some(t => t.commentId === c.id)) { plan.push({ text: '#' + c.order_id + ' ' + String(c.message).replace(/\s+/g, ' ').slice(0, 70), state: 'todo', commentId: c.id, number: c.order_id }); savePlan(); } continue; }
         if (!c.parent_id) { plan.push({ text: '#' + c.order_id + ' ' + String(c.message).replace(/\s+/g, ' ').slice(0, 70), state: 'todo', commentId: c.id, number: c.order_id }); savePlan(); }
         pushEvent({ type: 'comment', fileKey: key, id: c.id, number: c.order_id || null, replyTo: c.parent_id || null, author: c.user && c.user.handle, text: c.message, nodeId: c.client_meta && c.client_meta.node_id || null, offset: c.client_meta && c.client_meta.node_offset || null });
       }
