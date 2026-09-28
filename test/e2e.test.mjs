@@ -1,0 +1,166 @@
+// End to end, every hop a job takes in Figma: run.mjs (child process) → server.mjs (child process, free port,
+// temporary BRIDGE_HOME) → the script of the ui.html the server generated (vm, stub DOM, real fetch) → code.js
+// (vm, mock Figma) → back the same way. Nothing touches the real bridge home.
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import http from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createFixture } from './mock-figma.mjs';
+import { bridgeApi, freePort, root, startBridge, startUi } from './harness.mjs';
+
+let bridge, home, work, env, ui, fx, token, figmaApi, api;
+const polledKeys = new Set(); // file keys the server asked the (fake) Figma REST API about
+const runCli = (...args) => new Promise(ok => {
+  const child = spawn(process.execPath, [join(root, 'run.mjs'), ...args], { env, cwd: work });
+  let out = '', err = '';
+  child.stdout.on('data', d => { out += d; });
+  child.stderr.on('data', d => { err += d; });
+  child.on('exit', code => { let json = null; try { json = JSON.parse(out); } catch (e) {} ok({ code, out, err, json }); });
+});
+const job = (name, code) => { writeFileSync(join(work, name), code); return name; };
+const project = (name, config, files = {}) => {
+  const dir = join(home, 'projects', name);
+  mkdirSync(join(dir, 'jobs'), { recursive: true });
+  writeFileSync(join(dir, 'project.json'), JSON.stringify(Object.assign({ name }, config)));
+  for (const [path, content] of Object.entries(files)) writeFileSync(join(dir, path), content);
+};
+
+before(async () => {
+  home = mkdtempSync(join(tmpdir(), 'bridge-e2e-'));
+  work = join(home, 'work');
+  mkdirSync(join(home, 'data'), { recursive: true });
+  mkdirSync(work);
+  writeFileSync(join(home, 'data', 'figma-token.txt'), 'test-token');
+  // The plugin's file (the mock's TESTFILE) belongs to "demo"; "other" only adds a file to poll.
+  project('demo', { files: ['TESTFILE'], preludes: ['jobs/_prelude.js'] }, { 'jobs/_prelude.js': 'const hex = () => "project hex";\nconst layer = () => "project";\nconst projectName = () => "demo";' });
+  project('other', { files: ['OTHERKEY'], preludes: ['jobs/_other.js'] }, { 'jobs/_other.js': 'const projectName = () => "other";' });
+  writeFileSync(join(work, 'extra-prelude.js'), 'const layer = () => "extra";');
+  figmaApi = http.createServer((req, res) => {
+    const m = req.url.match(/^\/v1\/files\/([^/]+)\/comments$/);
+    if (m) polledKeys.add(m[1]);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ comments: [] }));
+  });
+  await new Promise(ok => figmaApi.listen(0, '127.0.0.1', ok));
+  env = { ...process.env, BRIDGE_HOME: home, BRIDGE_PORT: String(await freePort()), BRIDGE_FIGMA_API: 'http://127.0.0.1:' + figmaApi.address().port };
+  bridge = await startBridge(env);
+  token = readFileSync(join(home, 'data', 'token.txt'), 'utf8').trim();
+  api = bridgeApi(env.BRIDGE_PORT, token);
+  fx = await createFixture();
+  ui = startUi(readFileSync(join(home, 'app', 'ui.html'), 'utf8'), fx.mock);
+});
+
+after(async () => {
+  if (ui) ui.stop();
+  if (bridge) await bridge.stop();
+  if (figmaApi) await new Promise(ok => figmaApi.close(ok));
+  rmSync(home, { recursive: true, force: true });
+});
+
+test('--status answers through the server', async () => {
+  const r = await runCli('--status');
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.json.queued, 0);
+  assert.equal(r.json.file.fileKey, 'TESTFILE');
+});
+
+test('a normal job gets prelude.js and the prelude of the project owning the plugin file, and applies its writes', async () => {
+  const r = await runCli(job('normal.js', `//# e2e normal
+    const card = one('Card');
+    card.name = 'Card (e2e)';
+    await shot(card, { name: 'e2e-card' });
+    return { name: card.name, project: projectName(), hex: hex('#000'), solid: solid('#FFFFFF')[0].color };`), '60000');
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.deepEqual(r.json.result, { name: 'Card (e2e)', project: 'demo', hex: 'project hex', solid: { r: 1, g: 1, b: 1 } });
+  assert.equal(r.json.dryRun, null);
+  assert.equal(r.json.dryRunReport, null);
+  assert.equal(r.json.images[0], join(home, 'data', 'out', 'e2e-card.png'));
+  assert.ok(existsSync(r.json.images[0]));
+  assert.equal(fx.card.name, 'Card (e2e)');
+});
+
+test('prelude order: prelude.js, then the project, then --prelude files; --project picks another project', async () => {
+  const layered = await runCli(job('layers.js', 'return [hex("#000"), layer(), projectName()]'), '--prelude', 'extra-prelude.js');
+  assert.deepEqual(layered.json.result, ['project hex', 'extra', 'demo']);
+  const other = await runCli(job('other.js', 'return [projectName(), typeof layer, hex("#FFFFFF")]'), '--project', 'other');
+  assert.deepEqual(other.json.result, ['other', 'undefined', { r: 1, g: 1, b: 1 }]);
+  const unknown = await runCli('other.js', '--project', 'nope');
+  assert.equal(unknown.code, 2);
+  assert.match(unknown.err, /no project "nope" \(projects: demo, other in /);
+});
+
+test('--dry-run records instead of writing, saves the full report and never marks the plan step', async () => {
+  await api('/plan', { tasks: [{ text: 'E2E step', state: 'todo' }] });
+  const before = fx.mock.snapshot();
+  const r = await runCli(job('dry.js', `
+    const card = one('Card (e2e)');
+    card.name = 'Should not stick';
+    for (let i = 0; i < 30; i++) card.x = i;
+    card.children[0].remove();
+    card.appendChild(frame('Temp'));
+    return card.name;`), '--dry-run', '--step', 'E2E step');
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.equal(r.json.ok, true);
+  assert.equal(r.json.result, 'Card (e2e)');
+  assert.deepEqual(fx.mock.snapshot(), before);
+  const summary = r.json.dryRun;
+  assert.deepEqual(summary.counts, { set: 31, call: 1, remove: 1 });
+  assert.deepEqual(summary.created, { FRAME: 1 });
+  assert.equal(summary.cleanedUp, 1);
+  assert.equal(summary.entries.length, 20);
+  assert.equal(r.json.dryRunReport, join(home, 'data', 'out', 'dry-run-' + r.json.dryRunReport.split('dry-run-')[1]));
+  const full = JSON.parse(readFileSync(r.json.dryRunReport, 'utf8'));
+  assert.equal(full.entries.length, 33);
+  assert.equal(full.entries.at(-1).method, 'appendChild');
+  assert.equal(full.entries.at(-1).to.name, 'Temp');
+  assert.deepEqual((await api('/plan')).tasks, [{ text: 'E2E step', state: 'todo' }]);
+});
+
+test('--na-sucho is the same flag; a throwing dry run exits 1 and still reports', async () => {
+  const before = fx.mock.snapshot();
+  const r = await runCli(job('dry-fail.js', `figma.createFrame(); one('Card (e2e)').visible = false; throw new Error('nope');`), '--na-sucho');
+  assert.equal(r.code, 1);
+  assert.equal(r.json.ok, false);
+  assert.equal(r.json.error, 'nope');
+  assert.equal(r.json.dryRun.error, 'nope');
+  assert.equal(r.json.dryRun.cleanedUp, 1);
+  assert.equal(r.json.dryRun.counts.set, 1);
+  assert.deepEqual(fx.mock.snapshot(), before);
+});
+
+test('--krok marks the plan step done after a successful normal run', async () => {
+  await api('/plan', { tasks: [{ text: 'E2E step', state: 'todo' }] });
+  const r = await runCli(job('step.js', 'return 1'), '--krok', 'E2E step');
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.equal((await api('/plan')).tasks[0].state, 'done');
+});
+
+test('--no-prelude sends none; bad combinations and missing files stop before sending', async () => {
+  const bare = await runCli(job('bare.js', 'return typeof hex'), '--no-prelude');
+  assert.equal(bare.code, 0, bare.out + bare.err);
+  assert.equal(bare.json.result, 'undefined');
+  const both = await runCli('bare.js', '--no-prelude', '--prelude', 'extra-prelude.js');
+  assert.equal(both.code, 2);
+  assert.match(both.err, /--no-prelude excludes --prelude and --project/);
+  const missing = await runCli('bare.js', '--prelude', 'nope.js');
+  assert.equal(missing.code, 2);
+  assert.match(missing.err, /prelude file not found: .*nope\.js/);
+  const unknown = await runCli('bare.js', '--dryrun');
+  assert.equal(unknown.code, 2);
+  assert.match(unknown.err, /unknown option --dryrun/);
+});
+
+test('comments are polled for the plugin file and the files of every local project', async () => {
+  for (let i = 0; i < 60 && polledKeys.size < 2; i++) await new Promise(ok => setTimeout(ok, 100));
+  assert.deepEqual([...polledKeys].sort(), ['OTHERKEY', 'TESTFILE']);
+  assert.equal((await api('/status')).comments, 'działa');
+});
+
+test('a job the plugin never answers times out with the server message', async () => {
+  const r = await runCli(job('slow.js', 'await new Promise(ok => setTimeout(ok, 1000));'), '300');
+  assert.equal(r.code, 1);
+  assert.match(r.json.error, /^timeout/);
+});

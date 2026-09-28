@@ -1,0 +1,14 @@
+# runtime state of a development checkout (BRIDGE_HOME = the repo): data/, linked projects and the generated ui.html
+data/
+projects/
+ui.html
+node_modules/
+# a checkout from before the runtime home kept its state at the top level
+token.txt
+figma-token.txt
+out/
+seen-comments.json
+events.jsonl
+plan.json
+bridge.config.json
+watch.json
