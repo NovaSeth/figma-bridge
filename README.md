@@ -24,6 +24,13 @@ Gdy zadanie padnie, krok **zostaje w toku** — plan ma mówić prawdę, a nie p
 Odhaczanie z ręki kończyło się tym, że okno pokazywało „Analizuję" przy pracy, która
 dawno się skończyła.
 
+## Plan w oknie wtyczki, osobno dla każdego pliku
+Każdy wpis planu ma `fileKey`, a okno wtyczki pokazuje tylko plan pliku, w którym je otwarto. Wątki komentarzy trafiają do planu swojego pliku.
+- `node plan.mjs --file <fileKey albo fragment nazwy pliku> "x:zrobione" ">:w toku" "-:do zrobienia"` ustawia plan tego pliku i nie rusza planów innych plików.
+- Bez `--file` (albo `FIGMA_FILE`) plan trafia do jedynego aktywnego okna wtyczki. Gdy wtyczka działa w kilku plikach, `plan.mjs` odmawia i prosi o `--file`.
+- `node run.mjs --status` pokazuje aktywne pliki i liczbę wpisów planu w każdym.
+- Po aktualizacji mostu otwórz wtyczkę ponownie w każdym pliku, bo stare okno pobiera plan bez filtra.
+
 ## Komentarze jako „hook"
 Plugin API nie widzi komentarzy, więc serwer odpytuje oficjalne REST API co 30 s i zamienia nowe komentarze w zdarzenia.
 1. Figma > Settings > Security > Personal access tokens > Generate new token. Zakres: tylko **Comments: Read**.

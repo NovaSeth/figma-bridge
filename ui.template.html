@@ -62,6 +62,8 @@
   const $ = id => document.getElementById(id);
   const secs = ms => (ms / 1000).toFixed(1).replace('.', ',') + ' s';
   const b64 = bytes => { let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(s); };
+  // fileKey pliku, w którym działa okno: plan i odpytywanie są per plik
+  let fileKey = null;
   let ticker = null, tasks = [], open = true, status = { kind: '', text: 'Łączę z mostem' }, jobProgress = null;
   let note = 'Zostaw to okno otwarte';
   // Znacznik ostatniego ruchu: zmiana planu albo krok w pliku. Po nim liczy się cisza.
@@ -119,7 +121,7 @@
 
   onmessage = async e => {
     const m = e.data && e.data.pluginMessage; if (!m) return;
-    if (m.type === 'context') { fetch(BASE + '/hello', { method: 'POST', headers: H, body: JSON.stringify({ fileKey: m.fileKey, fileName: m.fileName }) }).catch(() => {}); return; }
+    if (m.type === 'context') { fileKey = m.fileKey || null; fetch(BASE + '/hello', { method: 'POST', headers: H, body: JSON.stringify({ fileKey: m.fileKey, fileName: m.fileName }) }).catch(() => {}); return; }
     if (m.type === 'progress') { jobProgress = Math.max(0, Math.min(1, m.value)); note = 'W toku: ' + Math.round(jobProgress * 100) + '%'; render(); return; }
     if (m.type !== 'result') return;
     const job = running.get(m.id) || { label: 'zadanie', t: Date.now() }; running.delete(m.id); jobProgress = null;
@@ -136,7 +138,8 @@
   let byloSwieze = true;
   setInterval(async () => {
     try {
-      const r = await (await fetch(BASE + '/plan', { headers: H })).json();
+      if (!fileKey) return; // do czasu, aż okno zna swój plik, bez listy (inaczej pokazałoby plany wszystkich plików)
+      const r = await (await fetch(BASE + '/plan?file=' + encodeURIComponent(fileKey), { headers: H })).json();
       if (JSON.stringify(r.tasks) !== JSON.stringify(tasks)) { tasks = r.tasks; ostatniRuch = Date.now(); byloSwieze = true; render(); return; }
     } catch (err) {}
     // Sama cisza też zmienia napis, więc odświeżam okno w chwili, gdy „Analizuję” ma zgasnąć.
@@ -148,7 +151,7 @@
     try { const r = await fetch(BASE + '/status', { headers: H }); if (r.ok) { status = { kind: 'ok', text: 'Czekam na zadania' }; render(); } } catch (err) {}
     for (;;) {
       try {
-        const r = await fetch(BASE + '/next', { headers: H });
+        const r = await fetch(BASE + '/next' + (fileKey ? '?file=' + encodeURIComponent(fileKey) : ''), { headers: H });
         /*
          * Odpowiedź ZNACZY, że most żyje — i musi skasować poprzedni błąd.
          * Wcześniej powrót do zielonego był obwarowany `status.kind !== 'err'`,
