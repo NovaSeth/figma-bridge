@@ -21,6 +21,8 @@ let events = existsSync(eventsFile) ? readFileSync(eventsFile, 'utf8').split('\n
 const planFile = join(here, 'plan.json');
 // Plan jest per plik Figmy: każdy wpis ma fileKey, a okno wtyczki pokazuje tylko wpisy swojego pliku.
 let plan = existsSync(planFile) ? JSON.parse(readFileSync(planFile, 'utf8')) : [];
+// duplikaty wątków (z nakładających się odpytań komentarzy) – zostaje pierwszy wpis
+plan = plan.filter((t, i) => !t.commentId || plan.findIndex(x => x.commentId === t.commentId) === i);
 const seenFile = join(here, 'seen-comments.json'), watchFile = join(here, 'watch.json');
 { // stare wpisy bez fileKey: wątki komentarzy przypisane po seen-comments.json, pozostałe bez pliku (nie pokazują się w żadnym oknie)
   const seen0 = existsSync(seenFile) ? JSON.parse(readFileSync(seenFile, 'utf8')) : {};
@@ -88,7 +90,7 @@ async function pollComments() {
         if (c.resolved_at) continue;
         // pierwsze odpytanie pliku: otwarte wątki trafiają do planu, ale bez zdarzeń (żeby nie budzić Claude'a starymi komentarzami)
         if (first) { if (!c.parent_id && !plan.some(t => t.commentId === c.id)) { plan.push({ text: '#' + c.order_id + ' ' + String(c.message).replace(/\s+/g, ' ').slice(0, 70), state: 'todo', commentId: c.id, number: c.order_id, fileKey: key }); savePlan(); } continue; }
-        if (!c.parent_id) { plan.push({ text: '#' + c.order_id + ' ' + String(c.message).replace(/\s+/g, ' ').slice(0, 70), state: 'todo', commentId: c.id, number: c.order_id, fileKey: key }); savePlan(); }
+        if (!c.parent_id && !plan.some(t => t.commentId === c.id)) { plan.push({ text: '#' + c.order_id + ' ' + String(c.message).replace(/\s+/g, ' ').slice(0, 70), state: 'todo', commentId: c.id, number: c.order_id, fileKey: key }); savePlan(); }
         pushEvent({ type: 'comment', fileKey: key, id: c.id, number: c.order_id || null, replyTo: c.parent_id || null, author: c.user && c.user.handle, text: c.message, nodeId: c.client_meta && c.client_meta.node_id || null, offset: c.client_meta && c.client_meta.node_offset || null });
       }
       // wątek zamknięty w Figmie → zadanie z planu odhaczone
@@ -98,7 +100,10 @@ async function pollComments() {
   }
   writeFileSync(seenFile, JSON.stringify(seen));
 }
-setInterval(pollComments, 15000); setTimeout(pollComments, 1500);
+// jedno odpytanie naraz: przy wielu plikach i tokenach przebieg potrafi trwać dłużej niż 15 s, a nakładające się przebiegi czytały nieaktualne seen-comments.json i dublowały wpisy
+let polling = false;
+const pollOnce = async () => { if (polling) return; polling = true; try { await pollComments(); } finally { polling = false; } };
+setInterval(pollOnce, 15000); setTimeout(pollOnce, 1500);
 
 http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return send(res, 204);

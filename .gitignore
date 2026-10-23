@@ -4,3 +4,4 @@ out/
 figma-token.txt
 seen-comments.json
 events.jsonl
+.DS_Store
