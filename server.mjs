@@ -54,11 +54,14 @@ const saveEvents = () => { pruneEvents(); writeFileSync(eventsFile, events.map(e
 saveEvents(); setInterval(() => { const n = events.length; pruneEvents(); if (events.length !== n) saveEvents(); }, 3600 * 1000);
 const deliver = () => { if (eventWaiter && events.length) { const { res, timer } = eventWaiter; eventWaiter = null; clearTimeout(timer); const out = events; events = []; saveEvents(); send(res, 200, out); } };
 const pushEvent = e => { if (e.id && events.some(x => x.id === e.id)) return; events.push({ at: new Date().toISOString(), ...e }); saveEvents(); deliver(); };
-let poller = null, lastPoll = 0, seq = 0;
+// okna wtyczki czekające na zadanie, osobno dla każdego pliku (klucz: fileKey z /next?file=, '' dla starszego okna bez parametru)
+const pollers = new Map(); let lastPoll = 0, seq = 0;
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'X-Bridge-Token, Content-Type', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' };
 const send = (res, code, body) => { res.writeHead(code, { ...cors, 'Content-Type': 'application/json' }); res.end(body === undefined ? '' : JSON.stringify(body)); };
 const readBody = req => new Promise((ok, fail) => { const parts = []; req.on('data', c => parts.push(c)); req.on('end', () => { try { ok(JSON.parse(Buffer.concat(parts).toString('utf8') || '{}')); } catch (e) { fail(e); } }); });
-const handOut = () => { if (poller && queue.length) { const { res, timer } = poller; poller = null; clearTimeout(timer); send(res, 200, queue.shift()); } };
+// zadanie z file trafia tylko do okna tego pliku; bez file do dowolnego czekającego okna (jak dotąd)
+const handOut = () => { for (let i = 0; i < queue.length; i++) { const j = queue[i], key = j.file ? (pollers.has(j.file) ? j.file : null) : (pollers.size ? pollers.keys().next().value : null);
+  if (key === null) continue; const { res, timer } = pollers.get(key); pollers.delete(key); clearTimeout(timer); queue.splice(i, 1); send(res, 200, j); return handOut(); } };
 
 // Komentarze: Plugin API ich nie widzi, więc czytamy je oficjalnym REST API (tokeny osobiste w figma-token*.txt, zakres file_comments:read).
 // Kilka tokenów = kilka kont: dla każdego pliku próbujemy po kolei i zapamiętujemy ten, który ma do niego dostęp.
@@ -118,9 +121,10 @@ http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/next') {
       lastPoll = Date.now();
       if (qFile) files[qFile] = { ...(files[qFile] || {}), seen: Date.now() };
-      if (poller) { clearTimeout(poller.timer); send(poller.res, 204); }
-      poller = { res, timer: setTimeout(() => { if (poller && poller.res === res) { poller = null; send(res, 204); } }, 25000) };
-      req.on('close', () => { if (poller && poller.res === res) { clearTimeout(poller.timer); poller = null; } });
+      const pk = qFile || '', old = pollers.get(pk);
+      if (old) { clearTimeout(old.timer); send(old.res, 204); }
+      pollers.set(pk, { res, timer: setTimeout(() => { const p = pollers.get(pk); if (p && p.res === res) { pollers.delete(pk); send(res, 204); } }, 25000) });
+      req.on('close', () => { const p = pollers.get(pk); if (p && p.res === res) { clearTimeout(p.timer); pollers.delete(pk); } });
       return handOut();
     }
     if (req.method === 'POST' && req.url === '/result') {
@@ -136,7 +140,7 @@ http.createServer(async (req, res) => {
       const m = await readBody(req), id = 'j' + (++seq) + '-' + Date.now();
       const timer = setTimeout(() => { if (waiting.delete(id)) send(res, 504, { ok: false, error: 'timeout: wtyczka nie odesłała wyniku (czy okno Claude Bridge jest otwarte?)' }); }, m.timeoutMs || 120000);
       waiting.set(id, { res, timer });
-      queue.push({ id, code: String(m.code || ''), label: String(m.label || '').slice(0, 60) });
+      queue.push({ id, code: String(m.code || ''), label: String(m.label || '').slice(0, 60), file: m.file || null });
       return handOut();
     }
     if (req.method === 'POST' && req.url === '/hello') { const m = await readBody(req); plugin = { ...plugin, ...m };

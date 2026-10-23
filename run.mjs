@@ -25,7 +25,9 @@ const oznacz = async (mark, state) => {
 const code = readFileSync(arg, 'utf8');
 const label = (code.match(/^\/\/#\s*(.+)$/m) || [])[1] || basename(arg).replace(/\.js$/, '');
 await oznacz(krok, 'active');
-const r = await fetch(BASE + '/job', { method: 'POST', headers: H, body: JSON.stringify({ code, label, timeoutMs }) });
+// --file <fileKey>: zadanie tylko dla okna wtyczki w tym pliku (gdy wtyczka działa w kilku plikach naraz)
+const iFile = argv.indexOf('--file'), file = iFile >= 0 ? argv[iFile + 1] : (process.env.FIGMA_FILE || null);
+const r = await fetch(BASE + '/job', { method: 'POST', headers: H, body: JSON.stringify({ code, label, timeoutMs, file }) });
 const out = await r.json();
 console.log(JSON.stringify(out, null, 1));
 // Krok zostaje w toku, gdy zadanie padło — plan ma mówić prawdę, a nie pocieszać.
