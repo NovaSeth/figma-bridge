@@ -46,9 +46,14 @@ const resolveFile = q => {
   return { error: act.length ? 'wtyczka działa w kilku plikach (' + act.map(k => files[k].fileName).join(', ') + '): podaj --file' : 'żadne okno wtyczki nie jest aktywne: podaj --file' };
 };
 const forFile = key => plan.filter(t => t.fileKey === key);
-const saveEvents = () => writeFileSync(eventsFile, events.map(e => JSON.stringify(e)).join('\n') + (events.length ? '\n' : ''));
+// Nieodebrane zdarzenia nie rosną bez końca: gdy nikt nie czeka (wait.mjs), po 3 dniach są nieaktualne,
+// a wątki i tak są w planie. Zostaje najwyżej EVENTS_MAX najnowszych, po jednym na komentarz.
+const EVENTS_TTL = 3 * 24 * 3600 * 1000, EVENTS_MAX = 200;
+const pruneEvents = () => { const now = Date.now(), ids = new Set(); events = events.filter(e => now - Date.parse(e.at) < EVENTS_TTL && !(e.id && ids.has(e.id)) && (ids.add(e.id), true)).slice(-EVENTS_MAX); };
+const saveEvents = () => { pruneEvents(); writeFileSync(eventsFile, events.map(e => JSON.stringify(e)).join('\n') + (events.length ? '\n' : '')); };
+saveEvents(); setInterval(() => { const n = events.length; pruneEvents(); if (events.length !== n) saveEvents(); }, 3600 * 1000);
 const deliver = () => { if (eventWaiter && events.length) { const { res, timer } = eventWaiter; eventWaiter = null; clearTimeout(timer); const out = events; events = []; saveEvents(); send(res, 200, out); } };
-const pushEvent = e => { events.push({ at: new Date().toISOString(), ...e }); saveEvents(); deliver(); };
+const pushEvent = e => { if (e.id && events.some(x => x.id === e.id)) return; events.push({ at: new Date().toISOString(), ...e }); saveEvents(); deliver(); };
 let poller = null, lastPoll = 0, seq = 0;
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'X-Bridge-Token, Content-Type', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' };
 const send = (res, code, body) => { res.writeHead(code, { ...cors, 'Content-Type': 'application/json' }); res.end(body === undefined ? '' : JSON.stringify(body)); };

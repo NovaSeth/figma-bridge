@@ -43,7 +43,7 @@ Plugin API nie widzi komentarzy, więc serwer odpytuje oficjalne REST API co 30 
 1. Figma > Settings > Security > Personal access tokens > Generate new token. Zakres: tylko **Comments: Read**.
 2. Zapisz token do `figma-token.txt` w tym folderze (`chmod 600 figma-token.txt`). Plik jest w `.gitignore`.
 3. `node run.mjs --status` pokaże `comments: działa`. Pliki do śledzenia: `watch.json` plus plik, w którym działa wtyczka.
-4. `node wait.mjs` czeka na zdarzenie, wypisuje je i kończy działanie. Uruchomione w tle przez Claude'a budzi sesję, gdy dodasz komentarz. Nieodebrane zdarzenia czekają w `events.jsonl`.
+4. `node wait.mjs` czeka na zdarzenie, wypisuje je i kończy działanie. Uruchomione w tle przez Claude'a budzi sesję, gdy dodasz komentarz. Nieodebrane zdarzenia czekają w `events.jsonl` najwyżej 3 dni (zostaje 200 najnowszych, po jednym na komentarz).
 
 Pierwsze odpytanie tylko zapamiętuje istniejące komentarze. Zamykanie komentarzy nie jest dostępne w REST API, robi się to w interfejsie Figmy.
 
