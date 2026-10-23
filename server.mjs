@@ -73,6 +73,8 @@ async function pollComments() {
   if (!patFiles().length) return;
   const keys = new Set(existsSync(watchFile) ? JSON.parse(readFileSync(watchFile, 'utf8')).fileKeys || [] : []);
   if (plugin.fileKey) keys.add(plugin.fileKey);
+  // pliki z oknem wtyczki aktywnym w ostatnich 30 min (nie tylko ostatni /hello): otwarcie wtyczki w innym pliku nie zatrzymuje odpytywania poprzedniego
+  for (const [k, f] of Object.entries(files)) if (Date.now() - f.seen < 30 * 60 * 1000) keys.add(k);
   const seen = existsSync(seenFile) ? JSON.parse(readFileSync(seenFile, 'utf8')) : {};
   for (const key of keys) {
     try {
