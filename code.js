@@ -8,8 +8,18 @@ figma.ui.postMessage(context());
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const compile = code => {
-  try { return new AsyncFunction('figma', 'shot', 'progress', code); }
-  catch (e) { return eval('(async function (figma, shot, progress) {\n' + code + '\n})'); }
+  try { return new AsyncFunction('figma', 'shot', 'progress', 'breathe', code); }
+  catch (e) { return eval('(async function (figma, shot, progress, breathe) {\n' + code + '\n})'); }
+};
+
+// Skrypt działa w tym samym wątku co Figma: długa pętla bez przerwy zamraża cały edytor
+// (i pasek postępu, bo wiadomości do okna dochodzą dopiero po jej końcu).
+// await breathe() co ~50 ms oddaje na chwilę sterowanie, żeby Figma się przerysowała i obsłużyła kliknięcia.
+let lastBreath = 0;
+const breathe = async () => {
+  if (Date.now() - lastBreath < 50) return;
+  await new Promise(r => setTimeout(r, 0));
+  lastBreath = Date.now();
 };
 
 figma.ui.onmessage = async msg => {
@@ -28,9 +38,11 @@ figma.ui.onmessage = async msg => {
   const przed = new Set(figma.currentPage.children.map(n => n.id));
   const stronaPrzed = figma.currentPage;
   try {
-    // progress(0..1, opis): postęp kroku widoczny w oknie wtyczki
-    const progress = (value, note) => figma.ui.postMessage({ type: 'progress', value, note: note || '' });
-    const result = await compile(msg.code)(figma, shot, progress);
+    // await progress(0..1, opis): postęp kroku widoczny w oknie wtyczki; przy okazji daje Figmie odetchnąć
+    const progress = (value, note) => { figma.ui.postMessage({ type: 'progress', value, note: note || '' }); return breathe(); };
+    lastBreath = Date.now();
+    figma.skipInvisibleInstanceChildren = false; // ustawienie z poprzedniego skryptu nie przechodzi na następny
+    const result = await compile(msg.code)(figma, shot, progress, breathe);
     figma.ui.postMessage({ type: 'result', id: msg.id, ok: true, result: result === undefined ? null : result, images });
   } catch (e) {
     let sprzatniete = 0;

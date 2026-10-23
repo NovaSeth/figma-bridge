@@ -8,7 +8,14 @@ Lokalny most do Plugin API Figmy: Claude wysyła skrypt, wtyczka wykonuje go w o
 3. Uruchom „Claude Bridge (localhost)" w pliku, na którym ma pracować. Zostaw okno wtyczki otwarte.
 4. `node run.mjs skrypt.js` wykonuje skrypt. `node run.mjs --status` pokazuje, czy wtyczka jest podłączona.
 
-W skrypcie dostępne są `figma` (Plugin API, top-level `await`, `return` jako wynik), `await shot(node, {scale, name})` oraz `progress(0..1, opis)`.
+W skrypcie dostępne są `figma` (Plugin API, top-level `await`, `return` jako wynik), `await shot(node, {scale, name})`, `await progress(0..1, opis)` oraz `await breathe()`.
+
+### Żeby Figma się nie zacinała
+Skrypt działa w tym samym wątku co edytor Figmy. Dopóki pętla liczy bez przerwy, cała Figma stoi, a pasek postępu w oknie wtyczki się nie rusza.
+- W każdej dłuższej pętli (po ramkach, sekcjach, węzłach) wołaj `await progress(...)` albo `await breathe()`. Co ~50 ms oddają one na chwilę sterowanie Figmie. Samo `progress(...)` bez `await` tylko wysyła komunikat i nie odblokowuje edytora.
+- Zamiast `findAll(n => n.type === 'TEXT')` używaj `findAllWithCriteria({ types: ['TEXT'] })`. Jest liczone natywnie, bez wołania funkcji JS dla każdego węzła.
+- Nie zagnieżdżaj `findAll` w predykacie innego `findAll`. Wtedy każdy węzeł przeszukuje całe swoje poddrzewo, co daje koszt kwadratowy.
+- Gdy skrypt nie potrzebuje ukrytych warstw wewnątrz instancji, ustaw na początku `figma.skipInvisibleInstanceChildren = true`. Przeszukiwanie dużych plików z komponentami robi się wtedy wielokrotnie szybsze.
 
 ### Plan w oknie wtyczki
 `node plan.mjs "x:zrobione" ">:w toku" "-:do zrobienia"` ustawia listę kroków.
