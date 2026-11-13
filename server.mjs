@@ -366,7 +366,8 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
   const schedulePoll = () => { clearTimeout(pollSoon); pollSoon = setTimeout(pollComments, 300); };
   const server = http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') return send(res, 204);
-    if (!authorized(req.headers['x-bridge-token'])) { rejected(req); return send(res, 401, { error: 'bad token' }); }
+    // Without any token: refused, but not worth a line (mcp.mjs asks so whether a server is there).
+    if (!authorized(req.headers['x-bridge-token'])) { if (req.headers['x-bridge-token']) rejected(req); return send(res, 401, { error: 'bad token' }); }
     try {
       const url = new URL(req.url, 'http://localhost'), path = url.pathname, query = url.searchParams;
       if (req.method === 'GET' && path === '/next') {

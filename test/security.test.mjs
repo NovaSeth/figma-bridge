@@ -116,6 +116,10 @@ test('A09: every job leaves a line in the server log: which, where, how it went;
 test('A09: requests with a wrong token are logged, a burst of them as one line', async () => {
   const lines = [];
   const { api } = await start({ log: (...a) => lines.push(a.join(' ')) });
+  // A request without any token is refused but is no news: mcp.mjs asks that way whether a server is there,
+  // before every tool call.
+  for (let i = 0; i < 3; i++) assert.equal((await api('/status', undefined, {})).status, 401);
+  assert.deepEqual(lines.filter(l => /^rejected/.test(l)), []);
   for (let i = 0; i < 20; i++) await api('/job', { code: 'x' }, { 'X-Bridge-Token': 'guess' + i, 'Content-Type': 'application/json' });
   const rejected = lines.filter(l => /^rejected/.test(l));
   assert.equal(rejected.length, 1, lines.join('\n'));
