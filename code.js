@@ -31,7 +31,9 @@ const compile = (prelude, code) => {
 // A job runs on the thread Figma's editor runs on: a long loop without a pause freezes the whole editor, and the
 // progress bar too, because messages reach the window only once the loop ends. `await breathe()` hands control
 // back for a moment, at most every 50 ms, so Figma can redraw and take clicks.
-let lastBreath = 0;
+let lastBreath = 0, lastProgress = 0;
+// Jobs overlap at their awaits: the window hands over the next one while the first still runs.
+let runningJobs = 0, startedJobs = 0;
 const breathe = async () => {
   if (Date.now() - lastBreath < 50) return;
   await new Promise(ok => setTimeout(ok, 0));
@@ -259,26 +261,36 @@ figma.ui.onmessage = async msg => {
     images.push({ name: o.name || node.id.replace(/[:;]/g, '-'), bytes });
   };
   // await progress(0..1, note): step progress shown in the plugin window; awaited, it also lets Figma breathe.
-  const progress = (value, note) => { figma.ui.postMessage({ type: 'progress', value, note: note || '' }); return breathe(); };
+  // A loop may call it for every node: the window hears of it ten times a second at most, and of the end.
+  const progress = (value, note) => {
+    if (value >= 1 || Date.now() - lastProgress >= 100) { lastProgress = Date.now(); figma.ui.postMessage({ type: 'progress', value, note: note || '' }); }
+    return breathe();
+  };
   // A script that dies halfway leaves nodes on the page that never made it into a frame.
   // Remember the page before the start and remove the newcomers after an error.
   const startPage = figma.currentPage;
   const before = new Set(startPage.children.map(n => n.id));
-  let dry = null, outcome;
+  const mine = ++startedJobs;
+  let dry = null, outcome, alone = runningJobs === 0;
+  runningJobs++;
   try {
     if (msg.dryRun) dry = recorder(figma, startPage);
-    lastBreath = Date.now();
+    lastBreath = Date.now(); lastProgress = 0;
     figma.skipInvisibleInstanceChildren = false; // what the job before set does not carry over
     const result = await compile(msg.prelude || '', msg.code)(dry ? dry.figma : figma, shot, progress, breathe);
     outcome = { ok: true, result: result === undefined ? null : result };
   } catch (e) {
     outcome = { ok: false, error: String(e && e.message ? e.message : e) };
   }
+  runningJobs--;
+  if (startedJobs !== mine) alone = false;
   if (dry) outcome.dryRun = await dry.finish(outcome.error);
   else {
     outcome.dryRun = null;
     let cleaned = 0;
-    if (!outcome.ok) {
+    // The newcomers on the page may be another job's: nothing tells them apart, so then nothing is removed.
+    if (!outcome.ok && !alone) outcome.error += ' (bez sprzątania: w tym czasie działało inne zadanie)';
+    else if (!outcome.ok) {
       try {
         for (const n of startPage.children.slice()) if (!before.has(n.id) && n.type !== 'SECTION') { n.remove(); cleaned++; }
       } catch (err) {}

@@ -176,3 +176,31 @@ test('without clientStorage the toggle messages are harmless', async () => {
   await mock.figma.ui.onmessage({ type: 'ready' });
   assert.equal(mock.messages.at(-1).type, 'context');
 });
+
+test('a job that fails while another one runs does not remove the other job\'s new nodes', async () => {
+  const { mock, figma } = await createFixture();
+  const plugin = loadPlugin(mock);
+  // The window hands over the next job while the first is at an await: both are "new on the page" to each other.
+  const failing = plugin.run(`figma.createFrame().name = 'half done'; await new Promise(ok => setTimeout(ok, 40)); throw new Error('boom');`);
+  const other = plugin.run(`figma.createFrame().name = 'finished by the other job'; return 1;`);
+  const [a, b] = await Promise.all([failing, other]);
+  assert.equal(b.ok, true, b.error);
+  assert.equal(a.error, 'boom (bez sprzątania: w tym czasie działało inne zadanie)');
+  assert.ok(figma.currentPage.children.some(n => n.name === 'finished by the other job'));
+  // Alone again, a failing job cleans up after itself as before.
+  const alone = await plugin.run(`figma.createFrame().name = 'again'; throw new Error('boom');`);
+  assert.equal(alone.error, 'boom (posprzątano 1 niedokończonych węzłów)');
+});
+
+test('progress() called for every node reaches the window a few times, and the end always', async () => {
+  const mock = createFigma();
+  const plugin = loadPlugin(mock);
+  const r = await plugin.run('for (let i = 0; i < 2000; i++) progress(i / 2000, "node " + i); progress(1, "done"); return 1;');
+  assert.equal(r.ok, true, r.error);
+  const sent = mock.messages.filter(m => m.type === 'progress');
+  assert.ok(sent.length <= 5, sent.length + ' messages for 2001 calls');
+  assert.deepEqual([sent[0].value, sent.at(-1)], [0, { type: 'progress', value: 1, note: 'done' }]);
+  // The next job starts fresh: its first report is not swallowed.
+  await plugin.run('progress(0.3, "next job")');
+  assert.equal(mock.messages.filter(m => m.type === 'progress').at(-1).note, 'next job');
+});

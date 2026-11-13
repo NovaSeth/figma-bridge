@@ -14,6 +14,8 @@ after(() => homes.forEach(h => rmSync(h, { recursive: true, force: true })));
 // Servers and plugin loops stop even when an assertion fails halfway.
 afterEach(async () => { for (const f of cleanups.splice(0).reverse()) await f(); });
 const sleep = ms => new Promise(ok => setTimeout(ok, ms));
+// Waits for a condition instead of a fixed time: how long a child process takes depends on what else runs.
+const until = async (check, ms = 10000) => { for (const end = Date.now() + ms; Date.now() < end; await sleep(20)) if (await check()) return true; return false; };
 
 // A fresh bridge home with a Figma token and one local project watching OTHER.
 function home() {
@@ -345,7 +347,8 @@ test('a queued comment waits while the plugin is in another file: its jobs would
   await s.pollComments();
   assert.deepEqual(s.agent.state(), { running: c1.order_id, queued: 1 });
   await p.hello('SECOND');
-  await sleep(600);
+  assert.ok(await until(() => s.agent.state().running === null), 'the first run ends');
+  await sleep(150); // a second run started against the rule would show by now
   assert.deepEqual(s.agent.state(), { running: null, queued: 1 });
   assert.equal(readFileSync(join(h, 'runs.txt'), 'utf8'), 'x\n');
   await p.hello('FILE');
@@ -368,7 +371,8 @@ test('a plugin reopened after a while: /next does not start a queued comment bef
   rest.add('FILE', { client_meta: {} });
   await s.pollComments();
   await p.stop();
-  await sleep(700); // the first run ends; the plugin counts as gone
+  await sleep(400); // the plugin counts as gone
+  assert.ok(await until(() => s.agent.state().running === null), 'the first run ends');
   assert.deepEqual(s.agent.state(), { running: null, queued: 1 });
   const H = { 'X-Bridge-Token': s.token, 'Content-Type': 'application/json' }, reopened = new AbortController();
   cleanups.push(() => reopened.abort());

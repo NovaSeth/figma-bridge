@@ -187,3 +187,55 @@ test('evaluating the prelude reads nothing from the document: every helper is la
   assert.equal(r.ok, true, r.error);
   assert.deepEqual(fx.mock.calls, {});
 });
+
+test('usePage with a /g pattern finds the page every time, not every other time', async () => {
+  const { result } = await ok(`const re = /Screens/g; const names = []; for (let i = 0; i < 3; i++) names.push((await usePage(re)).name); return names;`);
+  assert.deepEqual(result, ['Screens', 'Screens', 'Screens']);
+});
+
+test('variable() reads the lists once for a name that does not exist', async () => {
+  const { result, fx } = await ok(`return await variable('no/such/variable')`);
+  assert.equal(result, null);
+  assert.equal(fx.mock.calls.getLocalVariablesAsync, 1);
+  // A variable created after the lists were cached is still found: a miss on cached lists reads them again.
+  const later = await ok(`await variable('color/surface'); const c = (await figma.variables.getLocalVariableCollectionsAsync())[0];
+    figma.variables.createVariable('late/one', c, 'COLOR'); return (await variable('late/one')).name;`);
+  assert.equal(later.result, 'late/one');
+});
+
+// With a clock that jumps 60 ms on every reading, breathe() pauses whenever it is asked; a timer only fires when
+// the job really lets go of the thread (the mock's own async calls resolve without one).
+// paused(body): the job body, then the number of pauses; the ticking ends with the job.
+const paused = body => `let now = Date.now(); Date.now = () => (now += 60);
+  let pauses = 0, ticking = true; const tick = () => { if (!ticking) return; pauses++; setTimeout(tick, 0); }; setTimeout(tick, 0);
+  try { ${body} } finally { ticking = false; }`;
+
+test('find, inspect and library let Figma breathe during a long scan', async () => {
+  for (const call of [`find('no such thing')`, `inspect('page', { depth: 5 })`, `library('variables')`, `library('components')`]) {
+    const { result } = await ok(paused(`await ${call}; return pauses;`));
+    assert.ok(result >= 1, call + ' never paused');
+  }
+});
+
+test('find pauses inside one big page too, and still hides invisible instance children afterwards as it found them', async () => {
+  const fx = await createFixture();
+  const big = fx.figma.createPage();
+  big.name = 'Big';
+  await fx.figma.setCurrentPageAsync(big);
+  for (let i = 0; i < 2500; i++) fx.figma.createFrame().name = 'Row ' + i;
+  await fx.figma.setCurrentPageAsync(fx.screens);
+  const { result } = await ok(paused(`const out = await find('Row 2499', { page: 'Big' }); return [out.split(' ').slice(1).join(' '), pauses, figma.skipInvisibleInstanceChildren];`), fx);
+  assert.equal(result[0], 'FRAME "Row 2499" · Big');
+  assert.ok(result[1] >= 2, 'paused ' + result[1] + ' times: once for the page is not enough for 2500 nodes');
+  assert.equal(result[2], false);
+});
+
+test('the helpers still work in a plugin window from before breathe(): the server may be newer than the open window', async () => {
+  const fx = await createFixture();
+  // What code.js of that window does: the prelude and the job as one async function of (figma, shot, progress).
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const run = body => new AsyncFunction('figma', 'shot', 'progress', builtInPrelude() + '\n;return (async () => {\n' + body + '\n})();')(fx.figma, null, () => {});
+  assert.equal(await run(`return await find('title')`), fx.title.id + ' TEXT "Title" · Screens › Card');
+  assert.match(await run(`return await inspect('page', { depth: 0 })`), /^PAGE "Screens" /);
+  assert.match(await run(`return await library('styles')`), /^PAINT 1\n/);
+});

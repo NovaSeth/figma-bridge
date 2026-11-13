@@ -18,9 +18,15 @@ const solid = (color, opacity) => {
   return [paint];
 };
 
+// A long scan pauses now and then so Figma stays responsive. code.js hands breathe to every job; a plugin window
+// opened before it did has none, and the helpers must still run there.
+const _breathe = typeof breathe === 'function' ? breathe : async () => {};
+
 // Finds a page by exact name or RegExp, makes it current (which loads it) and returns it.
 const usePage = async (match, { create = false } = {}) => {
-  let page = figma.root.children.find(p => (typeof match === 'string' ? p.name === match : match.test(p.name)));
+  // a /g or /y pattern remembers where it stopped and would miss the page every other time
+  const re = typeof match === 'string' ? null : new RegExp(match.source, match.flags.replace(/[gy]/g, ''));
+  let page = figma.root.children.find(p => (re ? re.test(p.name) : p.name === match));
   if (!page && create) {
     if (typeof match !== 'string') throw new Error('usePage: a new page needs a string name, got ' + match);
     page = figma.createPage();
@@ -64,13 +70,15 @@ const loadFonts = async nodes => {
 let _variables = null;
 const variable = async (name, collectionName) => {
   for (let attempt = 0; attempt < 2; attempt++) {
-    if (!_variables || attempt) {
+    const cached = !!_variables && !attempt;
+    if (!cached) {
       const lists = await Promise.all([figma.variables.getLocalVariablesAsync(), figma.variables.getLocalVariableCollectionsAsync()]);
       _variables = { vars: lists[0], collections: lists[1] };
     }
     const collection = collectionName == null ? null : _variables.collections.find(c => c.name === collectionName);
     const found = (collectionName == null || collection) && _variables.vars.find(v => v.name === name && (!collection || v.variableCollectionId === collection.id));
     if (found) return found;
+    if (!cached) break; // the lists were just read: reading them again finds nothing new
   }
   return null;
 };
@@ -382,7 +390,10 @@ const inspect = async (target, opts) => {
   };
   for (const node of found.nodes) await walk(node, 0, _get(node, 'parent'));
   const lines = [];
-  for (const r of rows) lines.push('  '.repeat(r.level) + (await _line(r.node, L, r.parent)) + (r.cut ? ' [+' + r.cut + ']' : ''));
+  for (const r of rows) {
+    lines.push('  '.repeat(r.level) + (await _line(r.node, L, r.parent)) + (r.cut ? ' [+' + r.cut + ']' : ''));
+    await _breathe();
+  }
   return lines.join('\n') + (more ? '\n… ' + more + ' more (maxLines ' + maxLines + ')' : '') + found.note;
 };
 
@@ -400,12 +411,16 @@ const find = async (query, opts) => {
     for (const p of pages) await p.loadAsync();
   } else await figma.loadAllPagesAsync();
   const lines = [], skip = figma.skipInvisibleInstanceChildren;
-  let total = 0;
+  let total = 0, scanned = 0;
   // Hidden layers inside instances are most of a big file and never what a search is after.
   figma.skipInvisibleInstanceChildren = true;
   try {
     for (const page of pages) {
+      // A pause lets other code run, and that code may set the flag: it is put back after every pause.
+      await _breathe();
+      figma.skipInvisibleInstanceChildren = true;
       for (const n of types ? page.findAllWithCriteria({ types: types }) : page.findAll()) {
+        if (!(++scanned & 511)) { await _breathe(); figma.skipInvisibleInstanceChildren = true; }
         const inName = re.test(n.name), byText = !inName && n.type === 'TEXT' && re.test(n.characters);
         if (!inName && !byText || ++total > limit) continue;
         let top = n;
@@ -443,6 +458,7 @@ const library = async (kind, opts) => {
       const modes = c.modes;
       add(c.name + ' [' + modes.map(m => m.name).join('|') + '] ' + vars.length);
       for (const v of vars) {
+        await _breathe();
         const values = [], byMode = v.valuesByMode;
         for (const m of modes) values.push(await _value(byMode[m.modeId], alias));
         add('  ' + v.name + ' ' + (values.every(x => x === values[0]) ? values[0] : values.join(' | ')));
@@ -463,6 +479,7 @@ const library = async (kind, opts) => {
   } else if (k === 'components') {
     await figma.loadAllPagesAsync();
     for (const page of figma.root.children) {
+      await _breathe();
       const comps = page.findAllWithCriteria({ types: ['COMPONENT_SET', 'COMPONENT'] })
         .filter(c => !(c.parent && c.parent.type === 'COMPONENT_SET') && (!re || re.test(c.name)));
       if (!comps.length) continue;
