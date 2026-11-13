@@ -8,7 +8,7 @@ i zmienia go przez Plugin API. Pośredniczą mała wtyczka deweloperska i lokaln
 - **Precyzyjne zmiany.** Claude pisze JavaScript Plugin API. Zmiany masowe albo ryzykowne najpierw idą na sucho: raport
   mówi, co by się zmieniło, a plik zostaje nietknięty.
 - **Mało tokenów.** Odpowiedzi to zwarty tekst: jedna linia na węzeł albo token. Każda lista ma limit, a przycięta
-  kończy się jawnym „… N more”. Definicje wszystkich ośmiu narzędzi to ok. 2,8 tys. znaków. Zarys 60-węzłowego
+  kończy się jawnym „… N more”. Definicje wszystkich ośmiu narzędzi to ok. 2,9 tys. znaków. Zarys 60-węzłowego
   ekranu testowego do głębokości 3 to 42 linie i mniej niż 2,5 tys. znaków. Testy pilnują tych budżetów.
 - **Komentarze jako polecenia.** Włączasz w oknie wtyczki „Claude słucha komentarzy”, piszesz komentarz w Figmie,
   a Claude wprowadza zmianę i odpowiada w wątku.
@@ -37,8 +37,8 @@ Wszystko, co działa, leży poza repozytorium:
 ```
 ~/Library/Application Support/Claude Figma Bridge/
   app/        kopia plików wykonywalnych z repo i wygenerowany ui.html (z tokenem mostu)
-  data/       token.txt, figma-token.txt, out/ (zrzuty, wyniki, raporty prób), plan.json, state.json,
-              events.jsonl, logs/, scratch/
+  data/       token.txt, figma-token*.txt, out/ (zrzuty, wyniki, raporty prób), plan.json, state.json,
+              seen-comments.json, events.jsonl, logs/, scratch/ (prawa 0700)
   projects/   lokalne projekty (niżej)
 ```
 
@@ -76,8 +76,10 @@ ani `~/Downloads`. Samo repo może leżeć gdziekolwiek.
    ```
    Skrypt bierze token ze schowka i go nie wyświetla. Zapisuje go do `data/figma-token.txt` (0600) i czyści schowek.
 
-**Aktualizacja:** `git pull && node install.mjs`. Instalator podmienia pliki i restartuje serwer. Po zmianach wtyczki
-zamknij i otwórz jej okno. `node install.mjs --verify` sprawdza, czy `app/` zgadza się z repo.
+**Aktualizacja:** `git pull && node install.mjs`. Instalator podmienia pliki i restartuje serwer. Potem zamknij
+i otwórz okno wtyczki w każdym pliku (stare okno działa dalej, ale po staremu) i zacznij nową sesję Claude Code.
+`node install.mjs --verify` sprawdza, czy `app/` zgadza się z repo. Klon sprzed 13.11.2026 ma inną historię:
+zamiast `git pull` sklonuj repo od nowa.
 Inny katalog mostu: `BRIDGE_HOME=/ścieżka node install.mjs`. Instalator odmówi, jeśli ścieżka leży w folderze
 chronionym przez TCC.
 
@@ -99,7 +101,7 @@ MCP sam go uruchomi.
 | `figma_library` | zmienne lokalne z wartościami w każdym trybie (alias jako `→nazwa`), style z wartościami albo komponenty z osiami wariantów i właściwościami | `kind`: `variables`, `styles` albo `components`; `filter` |
 | `figma_run` | wynik skryptu JS Plugin API jako JSON w jednej linii: `{ok, result \| error, images, dryRun, dryRunReport, project}` | `code` albo `file`; `dryRun` false; `timeoutMs` 120000; `step`; `project`; `noPrelude` |
 | `figma_screenshot` | PNG w odpowiedzi (do 4 węzłów) i ścieżki plików w `data/out/` | `target` (jak w inspect, bez stron); `scale` 1; `maxSize` 1024 px (dłuższy bok) |
-| `figma_plan` | plan w oknie wtyczki jako lista `[x]` / `[>]` / `[ ]` | `tasks` (zastępuje plan); `add`; `mark` (początek tekstu albo `#N`) z `state` `todo` / `active` / `done`; `clearDone` |
+| `figma_plan` | plan pliku sesji (ten, który pokazuje okno wtyczki w tym pliku) jako lista `[x]` / `[>]` / `[ ]` | `tasks` (zastępuje plan pliku; wpisy otwartych wątków zostają); `add`; `mark` (początek tekstu albo `#N`) z `state` `todo` / `active` / `done`; `clearDone` |
 | `figma_comments` | nowe komentarze, po linii na każdy, albo odpowiedź w wątku | `wait` 0–25 s; `replyTo` i `text` |
 
 Przykład, `figma_inspect {target: "1:19", depth: 2}`:
@@ -122,23 +124,6 @@ numerze i żaden inny). Przed startem krok ma stan „w toku”, po udanym przeb
 Skrypt może trwać dłużej niż 5 minut (`timeoutMs` do godziny): serwer podtrzymuje wtedy odpowiedź, żeby klient
 nie zerwał połączenia. Po przekroczeniu `timeoutMs` odpowiedź to `ok: false`, okno wtyczki pokazuje „Krok
 przekroczył czas”, a skrypt, którego wtyczka nie skończyła, działa dalej, bo nie da się go przerwać.
-
-### Wtyczka w kilku plikach naraz
-
-Wtyczkę można otworzyć w kilku plikach jednocześnie. Każde okno czeka na zadania osobno i pokazuje plan tylko
-swojego pliku.
-
-- Polecenie bez wskazanego pliku trafia do okna otwartego jako ostatnie, a gdy to okno zniknie, do najpóźniej
-  otwartego z pozostałych. Każde narzędzie MCP i `run.mjs` najpierw pyta serwer o ten plik, a potem wysyła
-  zadanie właśnie do niego, więc zadanie nie trafi gdzie indziej, niż pokazał status.
-- `figma_status` wymienia pozostałe pliki w linii `other open files`. `figma_status {file: "fragment nazwy"}`
-  (albo klucz pliku) przełącza sesję Claude Code na ten plik: od tej chwili wszystkie narzędzia, także plan,
-  pracują w nim.
-- Z terminala to samo robi `--file <klucz albo fragment nazwy>` w `run.mjs` i `plan.mjs` albo zmienna `FIGMA_FILE`.
-- Zadanie dla pliku, w którym wtyczka nie jest otwarta, czeka na jej okno do końca swojego czasu. Nigdy nie wykona
-  się w innym pliku.
-- Po aktualizacji mostu otwórz wtyczkę ponownie w każdym pliku. Okno sprzed aktualizacji działa dalej, ale po
-  staremu: pokazuje plany wszystkich plików i nie odróżnia się od innych starych okien.
 
 ### B. Tryb komentarzy
 
@@ -186,6 +171,24 @@ Zmienne czyta serwer. Dopisz je do `EnvironmentVariables` w `~/Library/LaunchAge
 a potem wykonaj `launchctl bootout gui/$(id -u)/local.claude-figma-bridge` i `launchctl bootstrap gui/$(id -u)`
 z tym plikiem. Ponowna instalacja nadpisuje plist.
 
+### C. Wtyczka w kilku plikach naraz
+
+Wtyczkę można otworzyć w kilku plikach jednocześnie. Każde okno czeka na zadania osobno i pokazuje plan tylko
+swojego pliku.
+
+- Polecenie bez wskazanego pliku trafia do okna otwartego jako ostatnie, a gdy to okno zniknie, do najpóźniej
+  otwartego z pozostałych. Każde narzędzie MCP i `run.mjs` najpierw pyta serwer o ten plik, a potem wysyła
+  zadanie właśnie do niego, więc zadanie nie trafi gdzie indziej, niż pokazał status.
+- `figma_status` wymienia pozostałe pliki w linii `other open files`. `figma_status {file: "fragment nazwy"}`
+  (albo klucz pliku) przełącza sesję Claude Code na ten plik: od tej chwili wszystkie narzędzia, także plan,
+  pracują w nim.
+- Z terminala to samo robi `--file <klucz albo fragment nazwy>` w `run.mjs` i `plan.mjs` albo zmienna `FIGMA_FILE`.
+- Gdy wtyczka nie jest otwarta we wskazanym pliku, narzędzia MCP od razu odpowiadają „the Claude Bridge plugin is
+  not open in file …”. Zadanie z `run.mjs --file` czeka na okno tego pliku do końca swojego czasu. W żadnym
+  wypadku zadanie nie wykona się w innym pliku.
+- Po aktualizacji mostu otwórz wtyczkę ponownie w każdym pliku. Okno sprzed aktualizacji działa dalej, ale po
+  staremu: pokazuje plany wszystkich plików i nie odróżnia się od innych starych okien.
+
 ## Projekty
 
 Projekt to lokalny folder `projects/<nazwa>/` w katalogu mostu (nigdy w repo mostu) z plikiem `project.json`:
@@ -212,8 +215,8 @@ wobec folderu projektu. Klucz wskazujący brakujący plik daje błąd z nazwą t
 | `designMd` | Konfiguracja `tools/export-design-md.mjs --project <nazwa>`: nazwa, opisy, teksty sekcji i nagłówki tabel w DESIGN.md. Bez niej eksport używa ogólnych tekstów. |
 | `jobsDir` | Folder skryptów. `figma_run {file: "x.js"}` szuka pliku najpierw tu, potem w folderze projektu, a na końcu w katalogu sesji. |
 
-Projekt wybiera się według pliku otwartego we wtyczce albo jawnie: parametrem `project` w `figma_run` lub `--project`
-w `run.mjs`. W trybie komentarzy folder projektu jest katalogiem roboczym Claude'a. Bez projektu jest nim `data/scratch/`.
+Projekt wybiera się według pliku, w którym pracuje sesja (plik z `figma_status`, `--file`), albo jawnie: parametrem
+`project` w `figma_run` lub `--project` w `run.mjs`. W trybie komentarzy folder projektu jest katalogiem roboczym Claude'a. Bez projektu jest nim `data/scratch/`.
 
 **Projekt w repozytorium (opcjonalnie).** Repo może mieć plik `.figma-bridge.json` z tymi samymi kluczami. Ścieżki
 w nim są względne wobec tego pliku i muszą leżeć wewnątrz repo. Gdy Claude Code startuje w tym repo albo w jego
@@ -263,7 +266,8 @@ Ograniczenia:
 - Próba nie zmienia kroku planu (`step`).
 
 Zwykły przebieg, który się wysypie, usuwa tylko nowe węzły najwyższego poziomu na stronie startowej (sekcje zostają).
-Wcześniejsze zmiany zostają w pliku, dlatego zmiany masowe najpierw puszczaj na sucho.
+Wcześniejsze zmiany zostają w pliku, dlatego zmiany masowe najpierw puszczaj na sucho. Jeśli w tym samym czasie
+działał inny skrypt, sprzątania nie ma (komunikat błędu to mówi), bo nowych węzłów nie da się przypisać do skryptu.
 
 ## Funkcje pomocnicze
 
@@ -318,6 +322,8 @@ node wait.mjs                                  # czeka na komentarz i wypisuje z
 node tools/snapshot.mjs [etykieta] [strona]    # zrzuty ramek strony do data/out/<etykieta>/ (etykieta: litery, cyfry, . _ -)
 node tools/sheet.mjs [katalog w out/] [prefiks] [na arkusz]   # arkusze ze zrzutami (Playwright)
 node tools/export-design-md.mjs [--project nazwa | --config plik] [--input plik] [wyjście]
+node link.mjs [--force] [katalog]              # łączy .figma-bridge.json z repo jako projekt (sekcja Projekty)
+sh add-token.sh [nazwa]                        # token Figmy ze schowka do data/figma-token[-nazwa].txt
 ```
 
 `--krok` i `--na-sucho` to polskie odpowiedniki `--step` i `--dry-run`. `--file` (albo zmienna `FIGMA_FILE`) to
@@ -371,7 +377,8 @@ w Settings → Security.
 
 ## Gdy coś nie działa
 
-- **„the Claude Bridge plugin is not open in Figma”**: otwórz wtyczkę w pliku i nie zamykaj jej okna. Serwer uznaje
+- **„the Claude Bridge plugin is not open in Figma”** (albo „… in file <klucz>”, gdy sesja pracuje we wskazanym
+  pliku): otwórz wtyczkę w tym pliku i nie zamykaj jej okna. Serwer uznaje
   okno za zamknięte, gdy przez 10 s nie czeka ono na zadanie. Zadanie, które okno wzięło i z którym się zamknęło,
   kończy się od razu błędem „okno wtyczki zamknęło się, zanim odesłało wynik”.
 - **Okno wtyczki: „Serwer mostu nie działa”**: sprawdź `launchctl print gui/$(id -u)/local.claude-figma-bridge`
@@ -414,8 +421,12 @@ w Settings → Security.
 - Bez zainstalowanego katalogu mostu `node server.mjs` w repo używa samego repo jako katalogu mostu (`data/`
   i `ui.html` są w `.gitignore`), a wtyczkę importuje się z `manifest.json` w repo. Gdy katalog mostu istnieje,
   skrypty uruchomione z repo korzystają z niego.
-- Zmienne tylko do testów: `BRIDGE_PORT` (manifest pozwala wyłącznie na 8765) i `BRIDGE_FIGMA_API`.
-  `BRIDGE_NO_AUTOSTART=1` sprawia, że MCP nigdy nie uruchamia serwera sam.
+- Zmienne środowiskowe: `BRIDGE_HOME` (katalog mostu), `FIGMA_FILE` (plik sesji MCP, `run.mjs` i `plan.mjs`),
+  `BRIDGE_FILE_ROOT` (jedyny folder, z którego MCP bierze skrypty; ustawia go tryb komentarzy),
+  `BRIDGE_AGENT_*` (limity trybu komentarzy), `BRIDGE_NO_AUTOSTART=1` (MCP nigdy nie uruchamia serwera sam).
+  Tylko do testów: `BRIDGE_PORT` (manifest pozwala wyłącznie na 8765) i `BRIDGE_FIGMA_API`.
+- Poprawka albo nowa funkcja zaczyna się od testu, który pada z właściwego powodu. Endpointy serwera i model
+  okien wtyczki opisuje [AGENTS.md](AGENTS.md).
 - Repo pozostaje ogólne: bez nazw projektów, kluczy plików ani materiałów konkretnego projektu. Takie rzeczy trzymaj
   w `projects/`.
 - Wskazówki dla agentów piszących kod albo pracujących w Figmie są w [AGENTS.md](AGENTS.md).

@@ -16,7 +16,8 @@ through the Claude Bridge plugin window, which must stay open. Setup is in READM
 | `figma_plan` | `tasks` (replaces the plan; `[{text,state}]` or strings); `add`; `mark` (text prefix or `#N`); `state` todo \| active \| done; `clearDone` | `[x]` done / `[>]` active / `[ ]` todo lines, or `plan is empty` |
 | `figma_comments` | `wait`=0 (0–25 s); `replyTo` + `text` to reply | one line per new comment, `no new comments`, or `replied in thread <id> (comment <newId>)` |
 
-A failing tool answers `error: …` with `isError`. Plugin closed: `the Claude Bridge plugin is not open in Figma …`.
+A failing tool answers `error: …` with `isError`. Plugin closed: `the Claude Bridge plugin is not open in Figma …`
+(`… in file <key> …` when the session works in a named file).
 
 ## Rules
 
@@ -44,7 +45,7 @@ A failing tool answers `error: …` with `isError`. Plugin closed: `the Claude B
 - A job runs on the editor's thread: a long loop freezes Figma. `await breathe()` (or `await progress(…)`) inside
   the loop hands control back for a moment, at most every 50 ms. `progress(…)` without `await` only reports.
 - A `//# Label` line names the job in the plugin window.
-- Prelude: `prelude.js`, then the preludes of the project that lists the open file (or of `project`), then the job.
+- Prelude: `prelude.js`, then the preludes of the project that lists the session's file (or of `project`), then the job.
   Each is nested in its own scope, so the job may redeclare a helper name. `noPrelude: true` sends no helpers at all.
   `figma_inspect`, `figma_find`, `figma_library` and `figma_screenshot` use `prelude.js` only.
 - `file`: an absolute path, else looked up in the project's `jobsDir`, then the project folder, then the session's
@@ -152,7 +153,7 @@ comments    #12 id=<id> [reply-to=<root id>] @author [node=<id>] [file=<key> whe
   the other matches in a closing note; `figma_screenshot` does not. Prefer ids.
 - `find` skips hidden layers inside instances.
 - `figma.skipInvisibleInstanceChildren = true` makes searches in component-heavy files many times faster; it is
-  reset before every job. `findAllWithCriteria({ types })` beats `findAll(predicate)`; a `findAll` inside a
+  reset when a job starts while no other job runs. `findAllWithCriteria({ types })` beats `findAll(predicate)`; a `findAll` inside a
   `findAll` predicate is quadratic.
 - A job for a file without a plugin window waits for one until its timeout; it never runs in another file.
 - `replyTo` must be a thread's root comment id. For a reply event, use its `reply-to` value. Each comment event is
@@ -165,8 +166,9 @@ comments    #12 id=<id> [reply-to=<root id>] @author [node=<id>] [file=<key> whe
 - `code.js`, `prelude.js` and job files (`tools/*.js`) run in the plugin sandbox. Keep them free of optional chaining
   and object spread. `PRELUDE_SEPARATOR` exists in both `code.js` and `project.mjs`; keep the two equal.
 - `npm test` runs `node --test test/*.test.mjs` against a mock Plugin API (`test/mock-figma.mjs`), a temporary
-  `BRIDGE_HOME` and fake `claude` / `launchctl` on `PATH`. Tests need no network and no Figma. Never run the
-  installer against the real home, LaunchAgents or MCP config.
+  `BRIDGE_HOME` and fake `claude` / `launchctl` on `PATH`. Tests need no network and no Figma, and never run the
+  installer against the real home, LaunchAgents or MCP config. Deploying (`node install.mjs` on the real home)
+  restarts the user's server: do it when the user asks for it.
 - A fix or a feature starts with a test that fails for the right reason. Wait on a condition, not on a fixed
   time, when a test depends on a child process. `test/security.test.mjs` holds the security contract by OWASP
   Top 10 heading: every request needs the token, plugin-given names stay inside `data/out`, the comment agent's
@@ -180,3 +182,26 @@ comments    #12 id=<id> [reply-to=<root id>] @author [node=<id>] [file=<key> whe
   lives in `<home>/projects/`.
 - `node install.mjs` deploys the checkout to `<home>/app` and restarts the server; `--verify` lists drift. Reopen the
   plugin after changing `code.js`, `ui.template.html` or `manifest.json`.
+
+## Server (server.mjs, 127.0.0.1 only; every request carries `X-Bridge-Token`)
+
+| Request | Does |
+|---|---|
+| `GET /next?win=<id>&file=<key>` | a plugin window's long poll (25 s): answers a job `{id, code, label, dryRun, prelude, timeoutMs}` or 204 |
+| `POST /hello {win, openedAt, fileKey, fileName}` | a window names its file; the window opened last is the current one |
+| `POST /result {id, ok, result, error, images, dryRun}` | a window's answer to a job |
+| `POST /job {code, label, timeoutMs, dryRun, prelude, file}` | runs a job; answers its result, 504 on timeout, 400 for an unknown `file`; after 4 minutes the headers go out and the body starts with spaces |
+| `GET /status` | `{connected, pluginSeenMsAgo, queued, pendingEvents, file, files (when several are open), comments, listen, agent}` |
+| `GET /plan[?file=<key>]`, `POST /plan {file, tasks, add, mark, state, clearDone}` | the plan: all of it, one file's, or a change to one file's |
+| `GET /window?file=<key>` | `{tasks, listen}`: what a plugin window shows, asked every 2 s |
+| `GET /listen`, `POST /listen {on}` | the comment-mode toggle |
+| `GET /events` | long poll (25 s) for new comment events; waiters queue |
+| `POST /comments/reply {fileKey, commentId, text}` | answers in a thread with the token that reaches the file |
+
+- A plugin window is known by its id. An open window always has a poll waiting (it asks again at once, also
+  while a job runs), so one without a poll for 10 s counts as closed; a window without `?win=` (older code) has
+  the id `''`.
+- A job with `file` goes to a window of that file only. MCP tools and `run.mjs` read `/status` first and send
+  the job to the file it named. A job a window took and closed with is answered with an error within seconds.
+- State lives in `<home>/data`: `plan.json`, `events.jsonl`, `seen-comments.json`, `state.json`. Each is read
+  tolerantly on start: a file cut off by a crash must not stop the server.

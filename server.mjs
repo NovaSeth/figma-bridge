@@ -1,6 +1,7 @@
 // Local server of the Figma bridge. Listens on 127.0.0.1 only; every request needs the token from data/token.txt.
-// Hands jobs to the plugin window (long poll /next), reads Figma comments over REST and, while the plugin is
-// connected and its "Claude słucha komentarzy" toggle is on, gives new comments in the plugin's file to agent.mjs.
+// Hands jobs to the plugin windows (one per open file, each on its own long poll /next), reads Figma comments
+// over REST and, while the "Claude słucha komentarzy" toggle is on, gives new comments in the files a plugin
+// window is open in to agent.mjs. The endpoints are listed in AGENTS.md.
 // Start: node server.mjs (install.mjs installs a LaunchAgent that keeps it running).
 import http from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';

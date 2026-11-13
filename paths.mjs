@@ -1,6 +1,6 @@
 // Where the bridge keeps its code, runtime data and local projects. Everything else imports this.
 //   <home>/app/        installed copy of the runtime files (+ the generated ui.html)
-//   <home>/data/       token.txt, figma-token.txt, out/, events.jsonl, plan.json, state.json, logs/, …
+//   <home>/data/       token.txt, figma-token*.txt, out/, events.jsonl, plan.json, seen-comments.json, state.json, logs/, …
 //   <home>/projects/   local project material, never in a repo
 // The home sits outside ~/Documents, ~/Desktop and ~/Downloads: macOS privacy protection (TCC) denies launchd
 // jobs any access there.

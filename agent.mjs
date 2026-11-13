@@ -1,6 +1,7 @@
-// Comment agent: server.mjs hands it new top-level comments of the plugin's file while listening is on.
-// One comment at a time: prefetch an outline of the pinned node through the job queue, build the prompt,
-// run Claude Code headless with only the figma-bridge MCP, reply in the thread, keep the plan entry current.
+// Comment agent: server.mjs hands it new top-level comments of the files a plugin window is open in, while
+// listening is on. One comment at a time: prefetch an outline of the pinned node through the job queue, build
+// the prompt, run Claude Code headless with only the figma-bridge MCP (tied to the comment's file and to the
+// session's folder), reply in the thread, keep the plan entry current.
 import { execFile } from 'node:child_process';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
