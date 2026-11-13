@@ -387,6 +387,10 @@ w Settings → Security.
   (np. `node server.mjs` uruchomiony ręcznie).
 - **Okno wtyczki: „Most odrzucił połączenie (401)”**: wtyczka ma inny token niż serwer. Zaimportuj ją
   z `app/manifest.json` w katalogu mostu (nie z repo), zamknij jej okno i otwórz ponownie.
+- **Figma: „Unable to load code … no such file or directory … ui.html”**: wtyczka jest zaimportowana z manifestu
+  w repo, a nie z `app/manifest.json` w katalogu mostu (instalator ostrzega o tym na końcu). Zaimportuj ją
+  z `app/manifest.json`: w oknie wyboru pliku `Cmd+Shift+G` pozwala wkleić ścieżkę do `~/Library/…`. Starą usuń
+  w Plugins → Development → Manage plugins in development.
 - **Brak narzędzi figma_* w Claude Code**: `claude mcp list` powinien pokazać `figma-bridge`. Jeśli go nie ma,
   uruchom `node install.mjs` i zacznij nową sesję.
 - **TCC i `~/Documents`**: instalator nie przyjmie `BRIDGE_HOME` w `~/Documents`, `~/Desktop`, `~/Downloads`,

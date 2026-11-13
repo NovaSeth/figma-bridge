@@ -160,3 +160,27 @@ test('add-token.sh saves the clipboard token to data/ privately, never prints it
   assert.equal(wrong.code, 1);
   assert.match(wrong.stdout, /file_comments|File comments/);
 });
+
+test('install says so when Figma has the plugin imported from somewhere else than app/: Figma would keep running that copy', async () => {
+  const s = sandbox();
+  const figma = join(s.home, 'Library', 'Application Support', 'Figma');
+  mkdirSync(figma, { recursive: true });
+  const settings = entries => writeFileSync(join(figma, 'settings.json'), JSON.stringify({ localFileExtensions: entries }));
+  // As Figma keeps them: the manifest of a checkout, another plugin, and stray files that were once picked.
+  mkdirSync(join(s.dir, 'other'), { recursive: true });
+  writeFileSync(join(s.dir, 'other', 'manifest.json'), JSON.stringify({ name: 'Something else', id: 'another-plugin' }));
+  settings([{ id: 3, manifestPath: join(root, 'manifest.json'), lastKnownName: 'Claude Bridge (localhost)' }, { id: 2, manifestPath: join(s.dir, 'other', 'manifest.json') },
+    { id: 4, manifestPath: join(root, 'code.js') }, { id: 5, manifestPath: join(s.dir, 'gone', 'manifest.json') }]);
+  const elsewhere = await s.run('install.mjs');
+  assert.equal(elsewhere.code, 0, elsewhere.stderr);
+  assert.match(elsewhere.stdout, new RegExp('Figma ma tę wtyczkę zaimportowaną z ' + join(root, 'manifest.json').replace(/[.\\/]/g, '\\$&')));
+  assert.ok(elsewhere.stdout.includes('Import plugin from manifest'), elsewhere.stdout);
+  assert.doesNotMatch(elsewhere.stdout, /other\/manifest\.json|gone\/manifest\.json/);
+  // Imported from app/, as the README says: nothing to warn about. A settings file that cannot be read is no error.
+  settings([{ id: 6, manifestPath: join(s.app, 'manifest.json') }]);
+  assert.doesNotMatch((await s.run('install.mjs')).stdout, /Figma ma tę wtyczkę zaimportowaną z/);
+  writeFileSync(join(figma, 'settings.json'), '{ broken');
+  const broken = await s.run('install.mjs');
+  assert.equal(broken.code, 0, broken.stderr);
+  assert.doesNotMatch(broken.stdout, /Figma ma tę wtyczkę zaimportowaną z/);
+});

@@ -75,6 +75,20 @@ export function compare(app, source = repo) {
     .concat(have.filter(p => !want.includes(p)).map(p => ({ path: p, problem: 'extra' })));
 }
 
+// Figma runs a development plugin from wherever its manifest was imported. Imported from a checkout instead of
+// app/, it keeps running that copy's code.js with a ui.html nobody refreshes, or one that is not there at all.
+// → the manifest paths of this plugin that Figma knows and that are not app/manifest.json
+export function importedElsewhere(app, home = homedir()) {
+  let entries, id;
+  try {
+    entries = JSON.parse(readFileSync(join(home, 'Library', 'Application Support', 'Figma', 'settings.json'), 'utf8')).localFileExtensions;
+    id = JSON.parse(readFileSync(join(repo, 'manifest.json'), 'utf8')).id;
+  } catch (e) { return []; }
+  const own = resolve(app, 'manifest.json');
+  return (Array.isArray(entries) ? entries : []).map(e => e && e.manifestPath).filter(p => typeof p === 'string' && resolve(p) !== own)
+    .filter(p => { try { return JSON.parse(readFileSync(p, 'utf8')).id === id; } catch (e) { return false; } });
+}
+
 async function main(argv) {
   // Never as a side effect of `npm install` (a lifecycle script named "install" would run on every install).
   if (['preinstall', 'install', 'postinstall'].includes(process.env.npm_lifecycle_event)) {
@@ -153,6 +167,11 @@ chmurowych ani dysków zewnętrznych. Ustaw BRIDGE_HOME poza nimi albo pomiń go
 Gotowe (${home}). Kroki ręczne:
 1. Figma desktop → Plugins → Development → Import plugin from manifest… → ${join(app, 'manifest.json')}
 2. ${token ? 'Token Figmy już jest. Nowy: ' : ''}utwórz w Figmie token osobisty z zakresem File comments: read i write (file_comments:read, file_comments:write), skopiuj go i uruchom: sh "${join(app, 'add-token.sh')}"`);
+  for (const path of importedElsewhere(app)) console.log(`
+Uwaga: Figma ma tę wtyczkę zaimportowaną z ${path}
+i uruchamia kod z tamtego miejsca, nie z ${app}. Zaimportuj ją z manifestu podanego w kroku 1
+(Plugins → Development → Import plugin from manifest…; w oknie wyboru pliku Cmd+Shift+G pozwala wkleić ścieżkę),
+a tamtą usuń w Plugins → Development → Manage plugins in development.`);
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) await main(process.argv.slice(2));
