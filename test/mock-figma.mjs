@@ -42,7 +42,13 @@ export function createFigma({ fileKey = 'TESTFILE', fileName = 'Test file' } = {
       if (s.type === 'DOCUMENT') throw new Error('in remove: Cannot remove the document');
       if (s.type === 'PAGE' && this === current) throw new Error('in remove: Cannot remove the current page');
       if (insideInstance(this)) throw new Error('in remove: Cannot remove a node inside an instance');
-      detach(this); markRemoved(this);
+      // As Figma desktop does it (probed 2026-11): a removed component or component set is not destroyed. It
+      // leaves the document (parent null) and stays alive with its layers: `removed` is false and
+      // getNodeByIdAsync still finds it. A layer bound to a component property inside such a component
+      // refuses remove().
+      if (s.refs && Object.keys(s.refs).length && !inDocument(this)) throw new Error('in remove: Removing this node is not allowed');
+      detach(this);
+      if (s.type !== 'COMPONENT' && s.type !== 'COMPONENT_SET') markRemoved(this);
     }
     toString() { const s = st(this, 'toString'); return '[Node ' + s.id + ']'; }
     setPluginData(key, value) { const s = live(this, 'setPluginData'); if (value === '') delete s.plugin[key]; else s.plugin[key] = String(value); }
@@ -65,6 +71,7 @@ export function createFigma({ fileKey = 'TESTFILE', fileName = 'Test file' } = {
     if (page && !S.get(page).loaded) throw new Error('in ' + what + ': The page "' + S.get(page).name + '" is not loaded. Call "await page.loadAsync()" first');
   };
   const descendants = node => { const out = []; const walk = n => { for (const c of S.get(n).children) { out.push(c); if (S.get(c).children) walk(c); } }; walk(node); return out; };
+  const inDocument = node => { for (let n = node; n; n = S.get(n).parent) if (S.get(n).type === 'DOCUMENT') return true; return false; };
   const detach = child => { const p = S.get(child).parent; if (p) { const list = S.get(p).children; list.splice(list.indexOf(child), 1); S.get(child).parent = null; } };
   const markRemoved = n => { const s = S.get(n); s.removed = true; byId.delete(s.id); (s.children || []).forEach(markRemoved); };
   const insert = (parent, child, index, what) => {

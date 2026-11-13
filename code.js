@@ -241,11 +241,18 @@ function recorder(real, startPage) {
     over = true;
     // Back to the page the job started on: a created page cannot be removed while it is current.
     try { if (real.currentPage !== startPage) await real.setCurrentPageAsync(startPage); } catch (e) {}
+    // Left behind is what still hangs in the document. Figma does not destroy a removed component or component
+    // set: it leaves the document and lives on with its layers, some of which then refuse remove(); a node whose
+    // parent was destroyed throws on every access.
+    const inDocument = o => { try { for (let n = o; n; n = n.parent) if (n.type === 'DOCUMENT') return true; } catch (e) {} return false; };
     const leftovers = [];
     for (let i = createdList.length - 1; i >= 0; i--) {
       const o = createdList[i];
       try { if (o.removed) continue; o.remove(); if (!standIns.has(o)) report.cleanedUp++; }
-      catch (e) { try { leftovers.push(o.id + ' (' + o.name + ': ' + (e && e.message ? e.message : e) + ')'); } catch (x) { leftovers.push('an object'); } }
+      catch (e) {
+        if (kindOf(o) === 'node' && !inDocument(o)) continue;
+        try { leftovers.push(o.id + ' (' + o.name + ': ' + (e && e.message ? e.message : e) + ')'); } catch (x) { leftovers.push('an object'); }
+      }
     }
     // A dry run promises an unchanged file: whatever stayed behind has to be named, not swallowed.
     const cleanup = leftovers.length ? 'cleanup could not remove ' + leftovers.join(', ') : null;

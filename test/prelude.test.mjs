@@ -254,3 +254,8 @@ test('find switches skipInvisibleInstanceChildren on only while it searches, not
   assert.equal(a.result, true, a.error);
   assert.deepEqual(b.result, [false]);
 });
+
+test('component() does not hand back a component the job removed: Figma keeps it alive, only out of the document', async () => {
+  const { result } = await ok(`const first = await component('Button'); first.remove(); const again = await component('Button'); return [first.removed, again === null];`);
+  assert.deepEqual(result, [false, true]);
+});

@@ -23,6 +23,8 @@ test('as a dry run it passes every check, records writes and leaves the file unc
     ['set', 'Card', 'name'], ['set', 'Card', 'opacity'], ['remove', 'Card', 'remove']]);
   assert.equal(r.images[0].name, 'smoke-test');
   assert.deepEqual(fx.mock.snapshot(), before);
+  // Its own component set leaves the document with the cleanup; the layers Figma keeps inside it are no leftovers.
+  assert.equal(r.dryRun.error, null);
 });
 
 test('it also runs on an empty file', async () => {
@@ -31,6 +33,7 @@ test('it also runs on an empty file', async () => {
   assert.equal(r.ok, true, r.error);
   assert.deepEqual(r.result.checks.filter(c => c.startsWith('FAIL')), []);
   assert.ok(r.dryRun.entries.length >= 3);
+  assert.equal(r.dryRun.error, null);
 });
 
 test('outside a dry run it stops and changes nothing', async () => {

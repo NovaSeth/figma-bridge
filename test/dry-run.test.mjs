@@ -410,3 +410,17 @@ test('a sublayer of a created node moved into an existing parent is cleaned up w
   assert.deepEqual(report.entries.map(e => [e.op, e.id, e.method]), [['call', fx.card.id, 'appendChild']]);
   assert.deepEqual(after, before);
 });
+
+test('what Figma keeps of a removed component set is not reported as left behind', async () => {
+  const fx = await createFixture();
+  const { r, report } = await dry(fx, `
+    const a = figma.createComponent(); a.name = 'State=A';
+    const label = figma.createText(); label.name = 'Label'; a.appendChild(label);
+    const b = figma.createComponent(); b.name = 'State=B';
+    const set = figma.combineAsVariants([a, b], figma.currentPage);
+    label.componentPropertyReferences = { characters: set.addComponentProperty('Label', 'TEXT', 'A') };
+    return set.id;`);
+  assert.equal(r.ok, true, r.error);
+  assert.equal(report.error, null);
+  assert.equal(fx.figma.currentPage.children.some(n => n.id === r.result), false, 'the set left the page');
+});

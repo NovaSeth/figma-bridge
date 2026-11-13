@@ -262,7 +262,8 @@ Ograniczenia:
 - Zapisy poza dokumentem, np. `figma.clientStorage`, wykonują się naprawdę.
 - Skrypt musi skończyć pracę przed `return`, więc każde wywołanie asynchroniczne potrzebuje `await`. Wywołania
   po zakończeniu próby kończą się błędem.
-- Obiekt, którego nie udało się sprzątnąć, jest wymieniony w `error`.
+- Obiekt, którego nie udało się sprzątnąć i który nadal jest w dokumencie, jest wymieniony w `error`. Usunięty
+  zestaw komponentów Figma trzyma poza dokumentem (da się go przywrócić z instancji); to nie jest pozostałość.
 - Próba nie zmienia kroku planu (`step`).
 
 Zwykły przebieg, który się wysypie, usuwa tylko nowe węzły najwyższego poziomu na stronie startowej (sekcje zostają).

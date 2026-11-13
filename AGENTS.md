@@ -156,6 +156,9 @@ comments    #12 id=<id> [reply-to=<root id>] @author [node=<id>] [file=<key> whe
   reset when a job starts while no other job runs. `findAllWithCriteria({ types })` beats `findAll(predicate)`; a `findAll` inside a
   `findAll` predicate is quadratic.
 - A job for a file without a plugin window waits for one until its timeout; it never runs in another file.
+- Figma does not destroy a removed component set: it leaves the document (`parent` is null) but `removed` stays
+  false, `getNodeByIdAsync` still finds it, and a layer bound to one of its properties refuses `remove()`. To
+  know whether a node is still in the file, walk `parent` up to the document.
 - `replyTo` must be a thread's root comment id. For a reply event, use its `reply-to` value. Each comment event is
   handed out once, to `figma_comments` or `wait.mjs`, whichever asks first.
 
@@ -176,6 +179,9 @@ comments    #12 id=<id> [reply-to=<root id>] @author [node=<id>] [file=<key> whe
   (`FIGMA_FILE`) and links no project, `link.mjs` never replaces a project from elsewhere.
 - The plugin window may be older than the server (it is replaced only when reopened): the server keeps
   answering a window without `?win=`, and `prelude.js` must not assume what a newer `code.js` passes in.
+- The mock (`test/mock-figma.mjs`) is only as true as what was checked against Figma. After a change to
+  `code.js` or `prelude.js`, run `node run.mjs tools/smoke-test.js --dry-run` on an open file too; when Figma
+  behaves differently, teach the mock first (a test goes red), then fix the code.
 - Output size is part of the contract: tests hold the tool list to ≤ 2900 chars and put budgets on inspect, find
   and library output. Keep tool descriptions and answers short.
 - The repo stays generic: no project names, file keys, prompts or fixtures from a real project. Project material

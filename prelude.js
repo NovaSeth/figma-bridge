@@ -94,7 +94,10 @@ const paintVar = async nameOrVariable => {
 // Local COMPONENT or COMPONENT_SET by name, on any page (loads all pages once); null when missing.
 let _components = null;
 const component = async name => {
-  const find = () => _components.find(c => !c.removed && c.name === name) || null;
+  // Figma keeps a removed component alive outside the document (`removed` stays false), so the cache asks
+  // whether it still hangs there.
+  const here = c => { try { for (let n = c; n; n = n.parent) if (n.type === 'DOCUMENT') return true; } catch (e) {} return false; };
+  const find = () => _components.find(c => c.name === name && here(c)) || null;
   const hit = _components && find();
   if (hit) return hit;
   await figma.loadAllPagesAsync();
