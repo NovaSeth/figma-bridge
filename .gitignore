@@ -12,3 +12,4 @@ events.jsonl
 plan.json
 bridge.config.json
 watch.json
+.DS_Store

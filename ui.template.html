@@ -141,15 +141,21 @@
   $('listen').onchange = () => { const on = !!$('listen').checked; parent.postMessage({ pluginMessage: { type: 'listen', on } }, '*'); setListen(on); };
   const startClock = () => { const t0 = Date.now(); clearInterval(ticker); const tick = () => { $('side').textContent = Math.floor((Date.now() - t0) / 1000) + ' s'; }; tick(); ticker = setInterval(tick, 1000); };
   const stopClock = () => { clearInterval(ticker); $('side').textContent = ''; };
+  // The plugin may be open in several files at once. Each window has its own id, waits for jobs on its own and
+  // shows the plan of its own file only; the server sends a job for a file to the window of that file.
+  const WIN = Math.random().toString(36).slice(2, 10);
   // The server learns the plugin's file from /hello; after a lost connection (a restarted server: reinstall,
   // KeepAlive) it is sent again before the next /next, since a long poll may take 25 s to answer.
-  let fileContext = null, helloDue = false;
+  let fileContext = null, helloDue = false, knowFile;
+  // Polling starts once the window knows its file (code.js answers "ready" with it), or after a moment without.
+  const fileKnown = new Promise(ok => { knowFile = ok; setTimeout(ok, 1500); });
+  const fileQuery = () => 'file=' + encodeURIComponent(fileContext && fileContext.fileKey || '');
   const hello = () => { if (!fileContext) return; helloDue = false;
-    fetch(BASE + '/hello', { method: 'POST', headers: H, body: JSON.stringify(fileContext) }).then(r => { if (!r.ok) helloDue = true; }, () => { helloDue = true; }); };
+    fetch(BASE + '/hello', { method: 'POST', headers: H, body: JSON.stringify(Object.assign({ win: WIN }, fileContext)) }).then(r => { if (!r.ok) helloDue = true; }, () => { helloDue = true; }); };
 
   onmessage = async e => {
     const m = e.data && e.data.pluginMessage; if (!m) return;
-    if (m.type === 'context') { fileContext = { fileKey: m.fileKey, fileName: m.fileName }; hello(); return; }
+    if (m.type === 'context') { fileContext = { fileKey: m.fileKey, fileName: m.fileName }; hello(); knowFile(); return; }
     if (m.type === 'listen') { setListen(!!m.on); return; }
     if (m.type === 'progress') { jobProgress = Math.max(0, Math.min(1, m.value)); note = 'W toku: ' + Math.round(jobProgress * 100) + '%'; render(); return; }
     if (m.type !== 'result') return;
@@ -168,7 +174,8 @@
   setInterval(async () => {
     if (!listenBusy) try { showListen(await (await fetch(BASE + '/listen', { headers: H })).json()); } catch (err) {}
     try {
-      const r = await (await fetch(BASE + '/plan', { headers: H })).json();
+      if (!fileContext) return; // until the window knows its file it would show the plans of every file
+      const r = await (await fetch(BASE + '/plan?' + fileQuery(), { headers: H })).json();
       if (JSON.stringify(r.tasks) !== JSON.stringify(tasks)) { tasks = r.tasks; ostatniRuch = Date.now(); byloSwieze = true; render(); return; }
     } catch (err) {}
     // Sama cisza też zmienia napis, więc odświeżam okno w chwili, gdy „Analizuję” ma zgasnąć.
@@ -178,10 +185,11 @@
   parent.postMessage({ pluginMessage: { type: 'ready' } }, '*');
   (async () => {
     try { const r = await fetch(BASE + '/status', { headers: H }); if (r.ok) { status = { kind: 'ok', text: 'Czekam na zadania' }; render(); } } catch (err) {}
+    await fileKnown;
     for (;;) {
       try {
         if (helloDue) hello();
-        const r = await fetch(BASE + '/next', { headers: H });
+        const r = await fetch(BASE + '/next?win=' + WIN + (fileContext && fileContext.fileKey ? '&' + fileQuery() : ''), { headers: H });
         /*
          * Odpowiedź ZNACZY, że most żyje — i musi skasować poprzedni błąd.
          * Wcześniej powrót do zielonego był obwarowany `status.kind !== 'err'`,

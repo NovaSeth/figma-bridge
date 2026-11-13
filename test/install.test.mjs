@@ -151,6 +151,11 @@ test('add-token.sh saves the clipboard token to data/ privately, never prints it
   assert.equal(statSync(file).mode & 0o777, 0o600);
   assert.ok(!r.stdout.includes('figd_secret'));
   assert.ok(s.calls().some(c => c[0] === 'pbcopy'));
+  // A second account gets a file of its own; the name cannot leave data/.
+  assert.equal((await s.run('add-token.sh', ['work'], { FAKE_CLIPBOARD: 'figd_other' })).code, 0);
+  assert.equal(readFileSync(join(s.data, 'figma-token-work.txt'), 'utf8'), 'figd_other');
+  assert.equal(readFileSync(file, 'utf8'), 'figd_secret');
+  assert.equal((await s.run('add-token.sh', ['../x'], { FAKE_CLIPBOARD: 'figd_other' })).code, 1);
   const wrong = await s.run('add-token.sh', [], { FAKE_CLIPBOARD: 'hello' });
   assert.equal(wrong.code, 1);
   assert.match(wrong.stdout, /file_comments|File comments/);

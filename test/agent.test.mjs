@@ -87,6 +87,11 @@ test('claude gets exactly the contract arguments', () => {
   assert.equal(inspectCode('1:2'), 'return await inspect("1:2", { depth: 2 })');
 });
 
+test('the session of a comment is tied to the comment\'s file: its MCP server gets FIGMA_FILE', () => {
+  const args = claudeArgs('P', { mcpPath: '/h/app/mcp.mjs', budgetUsd: 1, fileKey: 'KEY1' });
+  assert.deepEqual(JSON.parse(args[args.indexOf('--mcp-config') + 1]), { mcpServers: { 'figma-bridge': { command: 'node', args: ['/h/app/mcp.mjs'], env: { FIGMA_FILE: 'KEY1' } } } });
+});
+
 test('the reply carries the closing sentence, not the transcript', () => {
   assert.equal(summarize('Checked.\n\nMoved the **chip** 4 px\nleft.'), 'Moved the chip 4 px left.');
   assert.equal(summarize(''), '');
@@ -100,9 +105,10 @@ test('a comment runs end to end: inspect prefetch, prompt, claude in the project
   const { agent, calls } = rig({ project: { root, prompt: join(root, 'prompt.md') } });
   assert.equal(agent.enqueue(pinned), true);
   await agent.idle();
-  assert.deepEqual(calls.jobs, [{ code: 'return await inspect("1:2", { depth: 2 })', prelude: '/* prelude */', label: 'Komentarz #47', timeoutMs: 30000 }]);
+  // The outline is read in the comment's file, wherever else the plugin is open too.
+  assert.deepEqual(calls.jobs, [{ code: 'return await inspect("1:2", { depth: 2 })', prelude: '/* prelude */', label: 'Komentarz #47', timeoutMs: 30000, file: 'KEY1' }]);
   const [run] = readLog().filter(l => l.start);
-  assert.deepEqual(run.argv, claudeArgs('Do #47 "Move the chip 4 px left" on 1:2\nFRAME "Chip" 1:2 40×24', { mcpPath: '/app/mcp.mjs', budgetUsd: 3 }));
+  assert.deepEqual(run.argv, claudeArgs('Do #47 "Move the chip 4 px left" on 1:2\nFRAME "Chip" 1:2 40×24', { mcpPath: '/app/mcp.mjs', budgetUsd: 3, fileKey: 'KEY1' }));
   assert.equal(run.cwd, await import('node:fs').then(fs => fs.realpathSync(root)));
   assert.equal(run.nested, null, 'CLAUDECODE is dropped: claude refuses to start inside another session');
   assert.equal(run.home, join(dir, 'home'), 'the MCP server claude starts finds the same bridge home');

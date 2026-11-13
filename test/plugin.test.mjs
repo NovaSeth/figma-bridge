@@ -42,6 +42,27 @@ test('a normal job applies its writes and returns its value, shots and progress'
   assert.ok(mock.messages.some(m => m.type === 'progress' && m.value === 0.5 && m.note === 'half'));
 });
 
+test('await breathe() and await progress() hand control back to Figma, at most every 50 ms', async () => {
+  const plugin = loadPlugin(createFigma());
+  // A timer can only fire once the job lets go of the thread.
+  const soon = await plugin.run('let ticked = false; setTimeout(() => { ticked = true; }, 0); await breathe(); await progress(0.1); return ticked;');
+  assert.equal(soon.result, false, 'under 50 ms since the last pause: no pause');
+  const busy = `let ticked = false; setTimeout(() => { ticked = true; }, 0);
+    const t = Date.now(); while (Date.now() - t < 60) {}
+    const before = ticked; await PAUSE; return [before, ticked];`;
+  assert.deepEqual((await plugin.run(busy.replace('PAUSE', 'breathe()'))).result, [false, true]);
+  assert.deepEqual((await plugin.run(busy.replace('PAUSE', 'progress(0.5)'))).result, [false, true]);
+  assert.deepEqual((await plugin.run(busy.replace('PAUSE', 'breathe()'), { dryRun: true })).result, [false, true]);
+  // Without await, progress() still only reports, as before.
+  assert.equal((await plugin.run('progress(0.2, "x"); return 1')).result, 1);
+});
+
+test('skipInvisibleInstanceChildren set by one job does not carry over to the next', async () => {
+  const plugin = loadPlugin(createFigma());
+  assert.equal((await plugin.run('figma.skipInvisibleInstanceChildren = true; return figma.skipInvisibleInstanceChildren')).result, true);
+  assert.equal((await plugin.run('return figma.skipInvisibleInstanceChildren')).result, false);
+});
+
 test('undefined result becomes null; old clients without prelude/dryRun keep working', async () => {
   const mock = createFigma();
   const plugin = loadPlugin(mock);

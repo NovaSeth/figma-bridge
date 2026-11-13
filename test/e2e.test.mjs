@@ -20,6 +20,13 @@ const runCli = (...args) => new Promise(ok => {
   child.stderr.on('data', d => { err += d; });
   child.on('exit', code => { let json = null; try { json = JSON.parse(out); } catch (e) {} ok({ code, out, err, json }); });
 });
+const runPlan = (...args) => new Promise(ok => {
+  const child = spawn(process.execPath, [join(root, 'plan.mjs'), ...args], { env, cwd: work });
+  let out = '', err = '';
+  child.stdout.on('data', d => { out += d; });
+  child.stderr.on('data', d => { err += d; });
+  child.on('exit', code => ok({ code, out: out.trim(), err: err.trim() }));
+});
 const job = (name, code) => { writeFileSync(join(work, name), code); return name; };
 const project = (name, config, files = {}) => {
   const dir = join(home, 'projects', name);
@@ -116,7 +123,8 @@ test('--dry-run records instead of writing, saves the full report and never mark
   assert.equal(full.entries.length, 33);
   assert.equal(full.entries.at(-1).method, 'appendChild');
   assert.equal(full.entries.at(-1).to.name, 'Temp');
-  assert.deepEqual((await api('/plan')).tasks, [{ text: 'E2E step', state: 'todo' }]);
+  // The step belongs to the plan of the plugin's file.
+  assert.deepEqual((await api('/plan')).tasks, [{ text: 'E2E step', state: 'todo', fileKey: 'TESTFILE' }]);
 });
 
 test('--na-sucho is the same flag; a throwing dry run exits 1 and still reports', async () => {
@@ -136,6 +144,37 @@ test('--krok marks the plan step done after a successful normal run', async () =
   const r = await runCli(job('step.js', 'return 1'), '--krok', 'E2E step');
   assert.equal(r.code, 0, r.out + r.err);
   assert.equal((await api('/plan')).tasks[0].state, 'done');
+});
+
+test('--file sends the job, its plan step and its project to one Figma file: a key or a part of the name', async () => {
+  await api('/plan', { tasks: [{ text: 'File step', state: 'todo' }] });
+  const byKey = await runCli(job('file.js', 'return [figma.root.name, projectName()]'), '--file', 'TESTFILE', '--step', 'File step');
+  assert.equal(byKey.code, 0, byKey.out + byKey.err);
+  assert.deepEqual(byKey.json.result, ['Test file', 'demo']);
+  assert.equal((await api('/plan')).tasks[0].state, 'done');
+  const byName = await runCli('file.js', '--file', 'test fi');
+  assert.deepEqual(byName.json.result, ['Test file', 'demo']);
+  const unknown = await runCli('file.js', '--file', 'nope');
+  assert.equal(unknown.code, 1);
+  assert.match(unknown.json.error, /^no open file matches "nope"/);
+  // A file nobody has the plugin open in: the job waits for its window and times out; it never runs elsewhere.
+  const before = fx.mock.snapshot();
+  const closed = await runCli(job('elsewhere.js', 'figma.root.name = "wrong file"; return 1'), '300', '--file', 'OTHERKEY');
+  assert.equal(closed.code, 1);
+  assert.match(closed.json.error, /^timeout.*OTHERKEY/);
+  assert.deepEqual(fx.mock.snapshot(), before);
+});
+
+test('plan.mjs sets and marks the plan of one file and says which', async () => {
+  const set = await runPlan('--file', 'TESTFILE', 'x:Done step', '>:Active step', '-:Later');
+  assert.deepEqual([set.code, set.out], [0, '1/3 · Test file']);
+  assert.deepEqual((await api('/plan?file=TESTFILE')).tasks.map(t => t.state + ' ' + t.text + ' ' + t.fileKey), ['done Done step TESTFILE', 'active Active step TESTFILE', 'todo Later TESTFILE']);
+  assert.equal((await runPlan('--done', 'Active')).out, '2/3 · Test file');
+  const unknown = await runPlan('--file', 'nope', '--add', 'x');
+  assert.equal(unknown.code, 1);
+  assert.match(unknown.err, /^plan: no open file matches "nope"/);
+  assert.equal((await runPlan('--file')).code, 1);
+  await api('/plan', { tasks: [] });
 });
 
 test('--no-prelude sends none; bad combinations and missing files stop before sending', async () => {

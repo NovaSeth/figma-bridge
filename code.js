@@ -24,8 +24,18 @@ const compile = (prelude, code) => {
   const body = (prelude ? prelude.split(PRELUDE_SEPARATOR) : []).concat(code)
     .reduceRight((inner, outer) => outer + '\n;return (async () => {\n' + inner + '\n})();');
   // Running the sent code is the bridge's job; eval is only the fallback for a sandbox without AsyncFunction.
-  try { return new AsyncFunction('figma', 'shot', 'progress', body); }
-  catch (e) { return eval('(async function (figma, shot, progress) {\n' + body + '\n})'); }
+  try { return new AsyncFunction('figma', 'shot', 'progress', 'breathe', body); }
+  catch (e) { return eval('(async function (figma, shot, progress, breathe) {\n' + body + '\n})'); }
+};
+
+// A job runs on the thread Figma's editor runs on: a long loop without a pause freezes the whole editor, and the
+// progress bar too, because messages reach the window only once the loop ends. `await breathe()` hands control
+// back for a moment, at most every 50 ms, so Figma can redraw and take clicks.
+let lastBreath = 0;
+const breathe = async () => {
+  if (Date.now() - lastBreath < 50) return;
+  await new Promise(ok => setTimeout(ok, 0));
+  lastBreath = Date.now();
 };
 
 // Dry run: the job gets a recording stand-in for `figma`. Writes to objects that existed before the job are
@@ -248,8 +258,8 @@ figma.ui.onmessage = async msg => {
     const bytes = await node.exportAsync({ format: 'PNG', constraint: { type: 'SCALE', value: o.scale || 1 } });
     images.push({ name: o.name || node.id.replace(/[:;]/g, '-'), bytes });
   };
-  // progress(0..1, note): step progress shown in the plugin window
-  const progress = (value, note) => figma.ui.postMessage({ type: 'progress', value, note: note || '' });
+  // await progress(0..1, note): step progress shown in the plugin window; awaited, it also lets Figma breathe.
+  const progress = (value, note) => { figma.ui.postMessage({ type: 'progress', value, note: note || '' }); return breathe(); };
   // A script that dies halfway leaves nodes on the page that never made it into a frame.
   // Remember the page before the start and remove the newcomers after an error.
   const startPage = figma.currentPage;
@@ -257,7 +267,9 @@ figma.ui.onmessage = async msg => {
   let dry = null, outcome;
   try {
     if (msg.dryRun) dry = recorder(figma, startPage);
-    const result = await compile(msg.prelude || '', msg.code)(dry ? dry.figma : figma, shot, progress);
+    lastBreath = Date.now();
+    figma.skipInvisibleInstanceChildren = false; // what the job before set does not carry over
+    const result = await compile(msg.prelude || '', msg.code)(dry ? dry.figma : figma, shot, progress, breathe);
     outcome = { ok: true, result: result === undefined ? null : result };
   } catch (e) {
     outcome = { ok: false, error: String(e && e.message ? e.message : e) };

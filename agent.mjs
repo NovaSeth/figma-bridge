@@ -34,8 +34,11 @@ export const ALLOWED_TOOLS = 'mcp__figma-bridge__*,' + BUILTIN_TOOLS;
 // the tools that run code and WebFetch, ignores the user's settings files (their allow rules would widen the
 // list below) and keeps the file tools inside the working directory; --tools names the only built-ins it gets.
 // A prompt starting with "-" (a front-matter "---") would be parsed as an option; a leading newline is harmless.
-export const claudeArgs = (prompt, { mcpPath, budgetUsd }) => ['-p', prompt.startsWith('-') ? '\n' + prompt : prompt, '--output-format', 'json', '--permission-mode', 'dontAsk',
-  '--restricted', '--tools', BUILTIN_TOOLS, '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: { 'figma-bridge': { command: 'node', args: [mcpPath] } } }),
+// fileKey: the session's MCP server sends every job to the plugin window of that file (FIGMA_FILE), so the plugin
+// being open in a second file cannot turn the comment's edits there.
+export const claudeArgs = (prompt, { mcpPath, budgetUsd, fileKey = null }) => ['-p', prompt.startsWith('-') ? '\n' + prompt : prompt, '--output-format', 'json', '--permission-mode', 'dontAsk',
+  '--restricted', '--tools', BUILTIN_TOOLS, '--strict-mcp-config', '--mcp-config',
+  JSON.stringify({ mcpServers: { 'figma-bridge': Object.assign({ command: 'node', args: [mcpPath] }, fileKey ? { env: { FIGMA_FILE: fileKey } } : {}) } }),
   '--allowedTools', ALLOWED_TOOLS, '--max-budget-usd', String(budgetUsd)];
 
 // The thread gets the closing sentence the prompt asks for, not the whole transcript.
@@ -48,7 +51,7 @@ export const inspectCode = nodeId => 'return await inspect(' + JSON.stringify(no
 
 const number = (value, fallback) => Number(value) > 0 ? Number(value) : fallback;
 
-// deps: runJob({code, prelude, label, timeoutMs}) → {ok, result, error}; reply(fileKey, commentId, text) → {ok};
+// deps: runJob({code, prelude, label, timeoutMs, file}) → {ok, result, error}; reply(fileKey, commentId, text) → {ok};
 // setStatus(event, planState, statusText); ready(event) → may this comment run now; project(fileKey) → {root, prompt} | null.
 export function createAgent({ runJob, reply, setStatus, ready = () => true, project = () => null, prelude = () => '',
   log = console.log, env = process.env, now = Date.now,
@@ -79,12 +82,12 @@ export function createAgent({ runJob, reply, setStatus, ready = () => true, proj
       const p = project(e.fileKey);
       let inspect = '';
       if (e.nodeId) {
-        const r = await runJob({ code: inspectCode(e.nodeId), prelude: prelude(), label: 'Komentarz #' + e.number, timeoutMs: inspectTimeoutMs });
+        const r = await runJob({ code: inspectCode(e.nodeId), prelude: prelude(), label: 'Komentarz #' + e.number, timeoutMs: inspectTimeoutMs, file: e.fileKey });
         inspect = r.ok ? (typeof r.result === 'string' ? r.result : JSON.stringify(r.result)) : '(unavailable: ' + r.error + ')';
       }
       const cwd = p ? p.root : scratchDir();
       mkdirSync(cwd, { recursive: true });
-      const r = await runClaude(claudeArgs(renderPrompt(p && p.prompt ? readFileSync(p.prompt, 'utf8').trimEnd() : DEFAULT_PROMPT, { ...e, inspect }), { mcpPath, budgetUsd }), cwd);
+      const r = await runClaude(claudeArgs(renderPrompt(p && p.prompt ? readFileSync(p.prompt, 'utf8').trimEnd() : DEFAULT_PROMPT, { ...e, inspect }), { mcpPath, budgetUsd, fileKey: e.fileKey }), cwd);
       if (!r.ok) { log(`#${e.number}: failed (${r.why})`); return setStatus(e, 'todo', 'nieudane'); }
       const summary = summarize(r.out.result);
       const sent = await reply(e.fileKey, e.id, 'Claude: ' + (summary || 'zrobione.') + '\n\n' + REPLY_TAIL);

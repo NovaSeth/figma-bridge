@@ -1,6 +1,9 @@
-// node run.mjs <script.js> [timeoutMs] [--step "plan text"] [--dry-run] [--project name] [--prelude file]... [--no-prelude]
+// node run.mjs <script.js> [timeoutMs] [--step "plan text"] [--dry-run] [--project name] [--prelude file]... [--no-prelude] [--file key]
 // node run.mjs --status
 // Polish aliases: --krok = --step, --na-sucho = --dry-run.
+//
+// --file (or FIGMA_FILE): the job, its plan step and its project belong to that Figma file: a file key, or a part
+// of the name of a file the plugin is open in. Without it the job goes to the window the plugin was opened in last.
 //
 // --step ties the job to a plan entry: active before the run, done after a successful one. A failed run leaves
 // it active, so the plugin window shows what really happened, not what I remember to tick off.
@@ -14,10 +17,10 @@ import { basename, resolve } from 'node:path';
 import { baseUrl, readToken } from './paths.mjs';
 import { buildPrelude, selectProject } from './project.mjs';
 
-const USAGE = 'usage: node run.mjs <script.js> [timeoutMs] [--step "plan text"] [--dry-run] [--project name] [--prelude file]... [--no-prelude] | --status';
+const USAGE = 'usage: node run.mjs <script.js> [timeoutMs] [--step "plan text"] [--dry-run] [--project name] [--prelude file]... [--no-prelude] [--file key] | --status';
 const fail = (message, code = 2) => { console.error(message); process.exit(code); };
 
-const opts = { script: null, timeoutMs: 120000, step: null, dryRun: false, project: null, preludes: [], noPrelude: false, status: false };
+const opts = { script: null, timeoutMs: 120000, step: null, dryRun: false, project: null, preludes: [], noPrelude: false, status: false, file: process.env.FIGMA_FILE || null };
 const argv = process.argv.slice(2);
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
@@ -25,6 +28,7 @@ for (let i = 0; i < argv.length; i++) {
   if (a === '--step' || a === '--krok') opts.step = value();
   else if (a === '--prelude') opts.preludes.push(value());
   else if (a === '--project') opts.project = value();
+  else if (a === '--file') opts.file = value();
   else if (a === '--dry-run' || a === '--na-sucho') opts.dryRun = true;
   else if (a === '--no-prelude') opts.noPrelude = true;
   else if (a === '--status') opts.status = true;
@@ -53,13 +57,16 @@ const readPrelude = async () => {
   const extra = opts.preludes.map(p => resolve(p));
   const missing = extra.find(f => !existsSync(f));
   if (missing) fail('prelude file not found: ' + missing);
-  // Without --project the plugin's current file picks the project; the server knows which file that is.
-  const fileKey = opts.project ? null : ((await (await request('/status')).json()).file || {}).fileKey;
+  // Without --project the job's file picks the project: --file when it is a key, else the plugin's current file,
+  // which the server knows.
+  const status = opts.project ? {} : await (await request('/status')).json();
+  const named = opts.file && (status.files || [status.file || {}]).find(f => f.fileKey === opts.file || (f.fileName || '').toLowerCase().includes(opts.file.toLowerCase()));
+  const fileKey = opts.project ? null : opts.file ? (named ? named.fileKey : opts.file) : (status.file || {}).fileKey;
   try { return buildPrelude({ project: selectProject({ name: opts.project, fileKey }), extra }); } catch (e) { return fail(e.message); }
 };
 const mark = async state => {
   if (!opts.step || opts.dryRun) return;
-  try { await fetch(baseUrl() + '/plan', { method: 'POST', headers: H, body: JSON.stringify({ mark: opts.step, state }) }); } catch (e) {}
+  try { await fetch(baseUrl() + '/plan', { method: 'POST', headers: H, body: JSON.stringify({ mark: opts.step, state, file: opts.file || undefined }) }); } catch (e) {}
 };
 
 if (!existsSync(opts.script)) fail('no such script: ' + opts.script);
@@ -68,7 +75,7 @@ const prelude = await readPrelude();
 // Label for the plugin window: a "//# description" line in the script, else the file name.
 const label = (code.match(/^\/\/#\s*(.+)$/m) || [])[1] || basename(opts.script).replace(/\.js$/, '');
 await mark('active');
-const r = await request('/job', { method: 'POST', body: JSON.stringify({ code, label, timeoutMs: opts.timeoutMs, dryRun: opts.dryRun, prelude }) });
+const r = await request('/job', { method: 'POST', body: JSON.stringify({ code, label, timeoutMs: opts.timeoutMs, dryRun: opts.dryRun, prelude, file: opts.file || undefined }) });
 const out = await r.json();
 console.log(JSON.stringify(out, null, 1));
 // A failed step stays active: the plan has to tell the truth, not comfort.

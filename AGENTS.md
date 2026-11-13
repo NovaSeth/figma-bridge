@@ -7,7 +7,7 @@ through the Claude Bridge plugin window, which must stay open. Setup is in READM
 
 | Tool | Params (default) | Returns |
 |---|---|---|
-| `figma_status` | none | lines `plugin:`, `file: "name" key`, `page:`, `selection: id TYPE "name"; …` (≤10), `project:`, `listen: on\|on, idle\|off`, `comment polling:`; `queued jobs:` / `new comments:` when > 0 |
+| `figma_status` | `file` (switch the session to another open file: key or part of the name) | lines `plugin:`, `file: "name" key`, `other open files: "name" key; …` (when the plugin is open in several), `page:`, `selection: id TYPE "name"; …` (≤10), `project:`, `listen: on\|on, idle\|off`, `comment polling:`; `queued jobs:` / `new comments:` when > 0 |
 | `figma_inspect` | `target`=selection \| page \| file \| node id \| name; `depth`=3 (0–50); `maxLines`=200 (1–2000) | outline, one line per node |
 | `figma_find` | `query` (required; case-insensitive substring or `/regex/flags`, matches the name or a TEXT node's content); `type` (`TEXT` or `FRAME,INSTANCE`); `page`; `limit`=30 (1–1000) | one line per match, all pages |
 | `figma_library` | `kind` (required: variables \| styles \| components); `filter` (substring or `/regex/`) | local tokens, styles or components |
@@ -29,13 +29,19 @@ A failing tool answers `error: …` with `isError`. Plugin closed: `the Claude B
    `filter`.
 6. `step` marks an existing plan entry: active before the run, done after success, left active after a failure.
    A dry run never marks it.
-7. When `figma_status` says `listen: on`, the comment agent handles new top-level comments in the open file. Do not
-   act on those from `figma_comments` too.
+7. When `figma_status` says `listen: on`, the comment agent handles new top-level comments in every file the plugin
+   is open in. Do not act on those from `figma_comments` too.
+8. The plugin may be open in several files (`other open files:`). Every tool works in one of them: the file chosen
+   with `figma_status {file}` (or `FIGMA_FILE` in the environment of `mcp.mjs`, `run.mjs`, `plan.mjs`), else the
+   file the plugin was opened in last. Check `file:` before editing. The plan is kept per file.
 
 ## Jobs (`figma_run` code, `run.mjs` scripts)
 
 - The code is the body of an async function with `figma`, `shot(node, {scale = 1, name})` (PNG path added to
-  `images`) and `progress(value 0..1, note)`. `return` a JSON-serializable value: return `node.id`, not the node.
+  `images`), `progress(value 0..1, note)` and `breathe()`. `return` a JSON-serializable value: return `node.id`,
+  not the node.
+- A job runs on the editor's thread: a long loop freezes Figma. `await breathe()` (or `await progress(…)`) inside
+  the loop hands control back for a moment, at most every 50 ms. `progress(…)` without `await` only reports.
 - A `//# Label` line names the job in the plugin window.
 - Prelude: `prelude.js`, then the preludes of the project that lists the open file (or of `project`), then the job.
   Each is nested in its own scope, so the job may redeclare a helper name. `noPrelude: true` sends no helpers at all.
@@ -52,8 +58,9 @@ A failing tool answers `error: …` with `isError`. Plugin closed: `the Claude B
 - An answer over 20000 chars saves the full result to `<data>/out/result-<ms>.json`. The answer then carries
   `resultFile`, `resultChars` and the first 10000 chars in `result`.
 
-Without MCP: `node run.mjs <job.js> [timeoutMs] [--dry-run] [--step "…"] [--project name] [--prelude file]... [--no-prelude]`
+Without MCP: `node run.mjs <job.js> [timeoutMs] [--dry-run] [--step "…"] [--project name] [--prelude file]... [--no-prelude] [--file key]`
 prints the server's answer as indented JSON and exits 0 (ok), 1 (failed or no server) or 2 (bad arguments).
+`--file` (also in `plan.mjs`): a file key, or a part of the name of a file the plugin is open in.
 
 Answer: `{"ok":true,"result":…,"images":["<data>/out/x.png"],"dryRun":{…},"dryRunReport":"<data>/out/dry-run-<id>.json","project":"name"}`.
 Empty fields are left out. On failure: `{"ok":false,"error":"…"}`.
@@ -137,6 +144,10 @@ comments    #12 id=<id> [reply-to=<root id>] @author [node=<id>] [file=<key> whe
 - A name target resolves to the first match (a page, then the current page, then all pages). `figma_inspect` names
   the other matches in a closing note; `figma_screenshot` does not. Prefer ids.
 - `find` skips hidden layers inside instances.
+- `figma.skipInvisibleInstanceChildren = true` makes searches in component-heavy files many times faster; it is
+  reset before every job. `findAllWithCriteria({ types })` beats `findAll(predicate)`; a `findAll` inside a
+  `findAll` predicate is quadratic.
+- A job for a file without a plugin window waits for one until its timeout; it never runs in another file.
 - `replyTo` must be a thread's root comment id. For a reply event, use its `reply-to` value. Each comment event is
   handed out once, to `figma_comments` or `wait.mjs`, whichever asks first.
 

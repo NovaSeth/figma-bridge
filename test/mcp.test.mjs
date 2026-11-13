@@ -8,7 +8,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createFixture } from './mock-figma.mjs';
+import { createFigma, createFixture } from './mock-figma.mjs';
 import { bridgeApi, freePort, root, startBridge, startUi } from './harness.mjs';
 
 const sleep = ms => new Promise(ok => setTimeout(ok, ms));
@@ -265,13 +265,41 @@ test('figma_comments: waits for a new comment, then replies in its thread', asyn
   assert.equal((await mcp.call('figma_comments', { replyTo: 'c7' })).isError, true);
 });
 
+test('the plugin open in a second file: figma_status lists it, {file} switches the session to a file', async () => {
+  const ui2 = startUi(readFileSync(join(home, 'app', 'ui.html'), 'utf8'), createFigma({ fileKey: 'SECONDFILE', fileName: 'Second file' }));
+  const rootName = async () => JSON.parse((await mcp.call('figma_run', { code: 'return figma.root.name', noPrelude: true })).text).result;
+  try {
+    assert.ok(await until(async () => ((await api('/status')).files || []).length === 2), 'both windows connected');
+    // Nothing chosen: the window opened last.
+    const last = await mcp.call('figma_status');
+    assert.match(last.text, /^plugin: connected\nfile: "Second file" SECONDFILE\nother open files: "Test file" TESTFILE \(figma_status \{file\} switches\)\npage: /);
+    assert.match(last.text, /\nproject: none\n/);
+    assert.equal(await rootName(), 'Second file');
+    const none = await mcp.call('figma_status', { file: 'nope' });
+    assert.equal(none.isError, true);
+    assert.equal(none.text, 'error: no open file matches "nope" (open: "Test file" TESTFILE, "Second file" SECONDFILE)');
+    assert.match((await mcp.call('figma_status', { file: 'file' })).text, /^error: several open files match "file"/);
+    // By a part of the name (or the key); every later call of the session works there.
+    const back = await mcp.call('figma_status', { file: 'test fi' });
+    assert.match(back.text, /^plugin: connected\nfile: "Test file" TESTFILE\nother open files: "Second file" SECONDFILE /);
+    assert.match(back.text, /\nproject: demo\n/);
+    assert.equal(await rootName(), 'Test file');
+    assert.match((await mcp.call('figma_inspect', { target: 'Card', depth: 0 })).text, /^FRAME "Card" /);
+    // The plan of that file: its open comment thread from before, and the new step.
+    assert.equal((await mcp.call('figma_plan', { add: 'Step in the chosen file' })).text, '[ ] #7 Make the card blue\n[>] Step in the chosen file');
+    assert.deepEqual((await api('/plan?file=SECONDFILE')).tasks, []);
+    assert.deepEqual((await api('/plan?file=TESTFILE')).tasks.map(t => t.fileKey), ['TESTFILE', 'TESTFILE']);
+  } finally { ui2.stop(); }
+  await mcp.call('figma_plan', { tasks: [] });
+});
+
 test('stdout stayed protocol-only for the whole session', () => {
   assert.ok(mcp.lines.length > 20);
   assert.ok(mcp.lines.every(l => JSON.parse(l).jsonrpc === '2.0'));
 });
 
 // A bridge server stand-in: /status as given, every other request recorded and answered by `answer`.
-async function fakeBridge(status, answer = () => [404, { error: 'not found' }]) {
+async function fakeBridge(status, answer = () => [404, { error: 'not found' }], extraEnv = {}) {
   const temp = mkdtempSync(join(tmpdir(), 'bridge-mcp-fake-')), requests = [];
   mkdirSync(join(temp, 'data'));
   writeFileSync(join(temp, 'data', 'token.txt'), 'fake-token');
@@ -279,13 +307,13 @@ async function fakeBridge(status, answer = () => [404, { error: 'not found' }]) 
     let body = '';
     req.on('data', d => { body += d; });
     req.on('end', () => {
-      const [code, out] = req.url === '/status' ? [200, status] : (requests.push({ url: req.url, body: body && JSON.parse(body) }), answer(req.url));
+      const [code, out] = req.url === '/status' ? [200, status] : (requests.push({ url: req.url, body: body && JSON.parse(body) }), answer(req.url, body && JSON.parse(body)));
       res.writeHead(code, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(out));
     });
   });
   await new Promise(ok => server.listen(0, '127.0.0.1', ok));
-  const client = startMcp({ ...env, BRIDGE_HOME: temp, BRIDGE_PORT: String(server.address().port) }, temp);
+  const client = startMcp({ ...env, BRIDGE_HOME: temp, BRIDGE_PORT: String(server.address().port), ...extraEnv }, temp);
   return { client, requests, async stop() { await client.close(); await new Promise(ok => server.close(ok)); rmSync(temp, { recursive: true, force: true }); } };
 }
 
@@ -304,6 +332,26 @@ test('a plugin the server has not heard from for 40 s counts as closed: no job i
     assert.equal((await fresh.client.call('figma_inspect', { target: 'page' })).text, 'PAGE "P" 1:1');
     assert.deepEqual(fresh.requests.map(r => r.url), ['/job']);
   } finally { await fresh.stop(); }
+});
+
+test('FIGMA_FILE ties a session to one file: jobs and plan changes name it; no window there means "not open"', async () => {
+  const answer = (url, body) => (url === '/job' ? [200, { ok: true, result: body.label === 'figma_status' ? ['P', '0:1', 0, []] : 'PAGE "P" 1:1' }]
+    : url === '/plan' ? [200, { tasks: [{ text: 'x', state: 'active' }] }] : [404, { error: 'not found' }]);
+  const tied = await fakeBridge({ connected: true, file: { fileKey: 'CURRENT', fileName: 'Current' }, files: [{ fileKey: 'CURRENT', fileName: 'Current' }, { fileKey: 'K', fileName: 'Tied' }] }, answer, { FIGMA_FILE: 'K' });
+  try {
+    assert.equal((await tied.client.call('figma_inspect', { target: 'page' })).text, 'PAGE "P" 1:1');
+    assert.equal((await tied.client.call('figma_plan', { add: 'x' })).text, '[>] x');
+    assert.match((await tied.client.call('figma_status')).text, /^plugin: connected\nfile: "Tied" K\nother open files: "Current" CURRENT .*\npage: "P" 0:1\n/);
+    assert.deepEqual(tied.requests.map(r => [r.url, r.body.file]), [['/job', 'K'], ['/plan', 'K'], ['/job', 'K']]);
+  } finally { await tied.stop(); }
+  const away = await fakeBridge({ connected: true, file: { fileKey: 'CURRENT', fileName: 'Current' } }, answer, { FIGMA_FILE: 'K' });
+  try {
+    const r = await away.client.call('figma_inspect', { target: 'page' });
+    assert.equal(r.isError, true);
+    assert.match(r.text, /plugin is not open in file K /);
+    assert.match((await away.client.call('figma_status')).text, /^plugin: not connected \(open Claude Bridge in file K\)\nfile: "" K\nother open files: "Current" CURRENT /);
+    assert.deepEqual(away.requests, []);
+  } finally { await away.stop(); }
 });
 
 test('a server error is a tool error that says what failed, not an empty answer', async () => {

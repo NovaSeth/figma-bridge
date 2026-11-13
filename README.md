@@ -93,7 +93,7 @@ MCP sam go uruchomi.
 
 | Narzędzie | Zwraca | Główne parametry (domyślnie) |
 |---|---|---|
-| `figma_status` | połączenie, plik, stronę, zaznaczenie (do 10), projekt, stan słuchania i odczytu komentarzy | — |
+| `figma_status` | połączenie, plik, inne pliki z otwartą wtyczką, stronę, zaznaczenie (do 10), projekt, stan słuchania i odczytu komentarzy | `file`: przełącza sesję na inny otwarty plik (klucz albo fragment nazwy) |
 | `figma_inspect` | zarys, po linii na węzeł: typ, nazwa, id, rozmiar, auto-layout, wypełnienia (nazwa zmiennej albo hex), tekst, właściwości instancji | `target`: `selection` (domyślnie), `page`, `file`, id albo nazwa; `depth` 3; `maxLines` 200 |
 | `figma_find` | węzły po nazwie albo treści tekstu, ze wszystkich stron: `id TYPE "nazwa" · strona › ramka` | `query` (podciąg bez rozróżniania wielkości liter albo `/regex/`); `type` (np. `TEXT,INSTANCE`); `page`; `limit` 30 |
 | `figma_library` | zmienne lokalne z wartościami w każdym trybie (alias jako `→nazwa`), style z wartościami albo komponenty z osiami wariantów i właściwościami | `kind`: `variables`, `styles` albo `components`; `filter` |
@@ -119,6 +119,22 @@ a `style:` poprzedza nazwę stylu.
 „w toku”, po udanym przebiegu „zrobione”. Gdy skrypt padnie, krok **zostaje w toku**, bo plan ma mówić, co się
 naprawdę stało.
 
+### Wtyczka w kilku plikach naraz
+
+Wtyczkę można otworzyć w kilku plikach jednocześnie. Każde okno czeka na zadania osobno i pokazuje plan tylko
+swojego pliku.
+
+- Polecenie bez wskazanego pliku trafia do okna otwartego jako ostatnie. Gdy to okno zniknie, do tego, które
+  odezwało się najpóźniej.
+- `figma_status` wymienia pozostałe pliki w linii `other open files`. `figma_status {file: "fragment nazwy"}`
+  (albo klucz pliku) przełącza sesję Claude Code na ten plik: od tej chwili wszystkie narzędzia, także plan,
+  pracują w nim.
+- Z terminala to samo robi `--file <klucz albo fragment nazwy>` w `run.mjs` i `plan.mjs` albo zmienna `FIGMA_FILE`.
+- Zadanie dla pliku, w którym wtyczka nie jest otwarta, czeka na jej okno do końca swojego czasu. Nigdy nie wykona
+  się w innym pliku.
+- Po aktualizacji mostu otwórz wtyczkę ponownie w każdym pliku. Okno sprzed aktualizacji działa dalej, ale po
+  staremu: pokazuje plany wszystkich plików i nie odróżnia się od innych starych okien.
+
 ### B. Tryb komentarzy
 
 1. Otwórz wtyczkę w pliku i włącz „Claude słucha komentarzy”. Pod przełącznikiem widać stan: „Słucham nowych
@@ -128,16 +144,27 @@ naprawdę stało.
    figma-bridge i odpowiada w wątku: „Claude: *co zrobił*. Sprawdź i zamknij wątek, jeśli się zgadza.”
 4. Sprawdzasz zmianę i zamykasz wątek (Resolve). Wpis znika wtedy z planu w oknie wtyczki.
 
-Każdy nowy wątek dostaje wpis w planie. Komentarz, którym zajmuje się Claude, ma przy nim stan: `w kolejce`,
-`w toku`, `zrobione`, `nieudane` albo `pominięte: limit N/h`. Wpis zostaje, dopóki nie zamkniesz wątku.
+Każdy otwarty wątek ma wpis w planie swojego pliku: nowe od razu, a te sprzed otwarcia wtyczki od pierwszego
+odczytu komentarzy pliku (stare wątki nie budzą Claude'a ani sesji). Komentarz, którym zajmuje się Claude, ma przy
+wpisie stan: `w kolejce`, `w toku`, `zrobione`, `nieudane` albo `pominięte: limit N/h`. Wpis zostaje, dopóki nie
+zamkniesz wątku.
 
 Claude reaguje tylko na komentarz, który:
 - zaczyna nowy wątek (odpowiedzi w wątkach nie uruchamiają Claude'a),
-- jest w pliku, w którym otwarto wtyczkę,
+- jest w pliku, w którym wtyczka jest otwarta (przy kilku oknach: w każdym z tych plików),
 - powstał, gdy przełącznik był włączony, a wtyczka otwarta w tym pliku.
+
+Sesja Claude'a dla komentarza jest przypięta do pliku komentarza (`FIGMA_FILE`), więc jej zmiany nie trafią do
+innego pliku, nawet gdy w międzyczasie otworzysz wtyczkę gdzie indziej.
 
 Każdy nowy komentarz, także taki, którym Claude się nie zajmie, widać w `figma_comments`. Wyłączenie przełącznika
 czyści kolejkę, a komentarz w toku kończy się normalnie. Wątek zamknięty, zanim przyszła jego kolej, wypada z kolejki.
+Komentarze pliku są czytane jeszcze przez 30 minut po tym, jak wtyczka przestała w nim działać. Zdarzenia, których
+nikt nie odebrał, czekają najwyżej 3 dni (zostaje 200 najnowszych, po jednym na komentarz).
+
+**Kilka kont Figmy.** Serwer czyta wszystkie pliki `data/figma-token*.txt`. Dla każdego pliku Figmy próbuje tokenów
+po kolei (najpierw `figma-token.txt`) i zapamiętuje ten, który ma do niego dostęp; tym samym tokenem odpowiada
+w wątkach. Kolejny token dodaje `add-token.sh <nazwa>`, który zapisuje `data/figma-token-<nazwa>.txt`.
 
 **Koszt i limity.** Każdy komentarz to osobna sesja `claude -p` na Twoim koncie Claude, liczona tak jak każda inna
 sesja Claude Code. Jeśli sesja się nie uda albo przekroczy czas, Claude nie odpowiada w wątku, plan pokazuje
@@ -227,9 +254,27 @@ Wcześniejsze zmiany zostają w pliku, dlatego zmiany masowe najpierw puszczaj n
 
 ## Funkcje pomocnicze
 
-Skrypt to ciało funkcji async z dostępem do `figma`, `shot(node, {scale, name})` (dołącza PNG do wyniku)
-i `progress(0..1, opis)` (postęp w oknie wtyczki). Wynik oddajesz przez `return` jako JSON, więc zwracaj id węzłów,
-a nie same węzły. Linia `//# Opis` nazywa skrypt w oknie wtyczki. Wbudowany `prelude.js` dodaje:
+Skrypt to ciało funkcji async z dostępem do `figma`, `shot(node, {scale, name})` (dołącza PNG do wyniku),
+`await progress(0..1, opis)` (postęp w oknie wtyczki) i `await breathe()`. Wynik oddajesz przez `return` jako JSON,
+więc zwracaj id węzłów, a nie same węzły. Linia `//# Opis` nazywa skrypt w oknie wtyczki.
+
+### Żeby Figma się nie zacinała
+
+Skrypt działa w tym samym wątku co edytor Figmy. Dopóki pętla liczy bez przerwy, cała Figma stoi, a pasek postępu
+w oknie wtyczki się nie rusza.
+
+- W każdej dłuższej pętli (po ramkach, sekcjach, węzłach) wołaj `await progress(...)` albo `await breathe()`.
+  Najwyżej co 50 ms oddają one na chwilę sterowanie Figmie. Samo `progress(...)` bez `await` tylko wysyła komunikat
+  i nie odblokowuje edytora.
+- Zamiast `findAll(n => n.type === 'TEXT')` używaj `findAllWithCriteria({ types: ['TEXT'] })` (albo `texts(węzeł)`).
+  Jest liczone natywnie, bez wołania funkcji JS dla każdego węzła.
+- Nie zagnieżdżaj `findAll` w predykacie innego `findAll`. Wtedy każdy węzeł przeszukuje całe swoje poddrzewo,
+  co daje koszt kwadratowy.
+- Gdy skrypt nie potrzebuje ukrytych warstw wewnątrz instancji, ustaw na początku
+  `figma.skipInvisibleInstanceChildren = true`. Przeszukiwanie dużych plików z komponentami robi się wtedy
+  wielokrotnie szybsze. Ustawienie nie przechodzi na następny skrypt.
+
+Wbudowany `prelude.js` dodaje:
 
 | Funkcja | Robi |
 |---|---|
@@ -252,18 +297,20 @@ Sygnatury i pułapki opisuje [AGENTS.md](AGENTS.md).
 Te same funkcje są dostępne bez MCP. Polecenia uruchamiasz w `app/` albo w repo:
 
 ```sh
-node run.mjs job.js [timeoutMs] [--dry-run] [--step "tekst"] [--project nazwa] [--prelude plik]... [--no-prelude]
+node run.mjs job.js [timeoutMs] [--dry-run] [--step "tekst"] [--project nazwa] [--prelude plik]... [--no-prelude] [--file plik]
 node run.mjs --status                          # stan serwera, wtyczki i komentarzy
 node run.mjs tools/smoke-test.js --dry-run     # bezpieczny test mostu na otwartym pliku
-node plan.mjs "x:zrobione" ">:w toku" "-:do zrobienia"    # także --add, --active "#12", --done "tekst", --clear-done
+node plan.mjs [--file plik] "x:zrobione" ">:w toku" "-:do zrobienia"    # także --add, --active "#12", --done "tekst", --clear-done
 node wait.mjs                                  # czeka na komentarz i wypisuje zdarzenia jako jedną linię JSON
 node tools/snapshot.mjs [etykieta] [strona]    # zrzuty ramek strony do data/out/<etykieta>/
 node tools/sheet.mjs [katalog w out/] [prefiks] [na arkusz]   # arkusze ze zrzutami (Playwright)
 node tools/export-design-md.mjs [--project nazwa | --config plik] [--input plik] [wyjście]
 ```
 
-`--krok` i `--na-sucho` to polskie odpowiedniki `--step` i `--dry-run`. `wait.mjs` i `figma_comments` pobierają
-zdarzenia z tej samej kolejki, więc każde zdarzenie trafia tylko do jednego z nich.
+`--krok` i `--na-sucho` to polskie odpowiedniki `--step` i `--dry-run`. `--file` (albo zmienna `FIGMA_FILE`) to
+klucz pliku Figmy albo fragment nazwy pliku z otwartą wtyczką: zadanie, jego krok planu i projekt dotyczą wtedy
+tego pliku. `wait.mjs` i `figma_comments` pobierają zdarzenia z tej samej kolejki, więc każde zdarzenie trafia tylko
+do jednego z nich.
 
 ## Bezpieczeństwo
 
@@ -276,7 +323,7 @@ zdarzenia z tej samej kolejki, więc każde zdarzenie trafia tylko do jednego z 
   komentarzy.
 - Kto zna token mostu i ma dostęp do tego komputera, może wykonać dowolny kod w otwartym pliku. Nie udostępniaj
   `token.txt` ani `ui.html`. Nowy token: usuń `data/token.txt`, uruchom `node install.mjs` i otwórz wtyczkę ponownie.
-- Token Figmy (`data/figma-token.txt`, 0600) służy tylko do czytania komentarzy i odpowiadania w wątkach przez
+- Tokeny Figmy (`data/figma-token*.txt`, 0600) służą tylko do czytania komentarzy i odpowiadania w wątkach przez
   `api.figma.com`.
 - W trybie komentarzy działa `claude -p --permission-mode dontAsk --restricted --tools Read,Write,Edit,Glob,Grep
   --strict-mcp-config`. Ma tylko MCP figma-bridge i narzędzia `mcp__figma-bridge__*`, `Read`, `Write`, `Edit`, `Glob`
@@ -315,11 +362,12 @@ w Settings → Security.
   iCloud Drive, folderach chmurowych ani na dyskach zewnętrznych. Z tego samego powodu Claude w trybie komentarzy
   nie odczyta tam plików, więc potrzebny mu materiał trzymaj w folderze projektu.
 - **Komentarze: `figma_status` pokazuje `comment polling: wyłączone (brak figma-token.txt)`**: uruchom `add-token.sh`.
-- **`błąd: HTTP 403 (token bez zakresu file_comments albo bez dostępu do pliku)`**: utwórz token z zakresem
-  File comments z odczytem i zapisem, na koncie z dostępem do pliku. Token tylko z odczytem czyta komentarze,
-  ale odpowiedzi w wątkach się nie udają.
-- **`HTTP 429 (limit zapytań)`**: serwer co 15 s pyta o komentarze pliku wtyczki i wszystkich plików z `files`
-  w projektach, więc ogranicz tę listę.
+- **`błąd: <klucz pliku>: HTTP 403 (token bez zakresu file_comments albo bez dostępu do pliku)`**: żaden token nie
+  sięga tego pliku. Utwórz token z zakresem File comments z odczytem i zapisem, na koncie z dostępem do pliku
+  (drugie konto: `add-token.sh <nazwa>`). Token tylko z odczytem czyta komentarze, ale odpowiedzi w wątkach się
+  nie udają. Jeśli to plik z `files` projektu, do którego nie masz już dostępu, usuń go z tej listy.
+- **`HTTP 429 (limit zapytań)`**: serwer co 15 s pyta o komentarze plików, w których wtyczka działała w ostatnich
+  30 minutach, i wszystkich plików z `files` w projektach, więc ogranicz tę listę.
 - **Claude nie reaguje na komentarz**: sprawdź notkę pod przełącznikiem, czy wtyczka jest otwarta w tym pliku, czy
   komentarz zaczyna nowy wątek i czy powstał po włączeniu słuchania. Stan `pominięte: limit 6/h` w planie oznacza
   godzinny limit. Przy stanie `nieudane` szukaj linii `agent #N` w `data/logs/server.log`. Jeśli `claude` zmienił

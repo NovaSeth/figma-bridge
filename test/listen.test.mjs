@@ -27,33 +27,38 @@ function home() {
   return h;
 }
 
-// Figma REST stand-in: comments per file, POSTs recorded.
+// Figma REST stand-in: comments per file, POSTs recorded. access[key] = the only token that may reach that file.
 function figmaRest() {
-  const comments = { FILE: [], OTHER: [], SECOND: [] }, posted = [], gets = [];
+  const comments = { FILE: [], OTHER: [], SECOND: [] }, posted = [], gets = [], tokens = [], access = {};
   let status = 200;
   const reply = (body, code = status) => ({ ok: code < 300, status: code, json: async () => body });
   const fetch = async (url, init = {}) => {
-    const key = decodeURIComponent(url.match(/\/v1\/files\/([^/]+)\/comments$/)[1]);
-    if (init.method === 'POST') { posted.push({ key, token: init.headers['X-Figma-Token'], ...JSON.parse(init.body) }); return reply({ id: 'r' + posted.length }); }
+    const key = decodeURIComponent(url.match(/\/v1\/files\/([^/]+)\/comments$/)[1]), token = init.headers['X-Figma-Token'];
+    tokens.push(key + ' ' + token);
+    if (access[key] && access[key] !== token) return reply({}, 403);
+    if (init.method === 'POST') { posted.push({ key, token, ...JSON.parse(init.body) }); return reply({ id: 'r' + posted.length }); }
     gets.push(key);
     return reply({ comments: comments[key] || [] });
   };
   let n = 0;
   const add = (key, fields = {}) => { const c = { id: 'c' + (++n), order_id: String(n), message: 'Comment ' + n, user: { handle: 'Ann' }, created_at: new Date().toISOString(), client_meta: { node_id: '1:2' }, ...fields }; comments[key].push(c); return c; };
-  return { comments, posted, gets, fetch, add, fail: code => { status = code; } };
+  return { comments, posted, gets, tokens, access, fetch, add, fail: code => { status = code; } };
 }
 
-// The plugin window: says hello, keeps a /next long poll open and answers jobs with `answer(job)`.
-function plugin(base, token, answer = () => 'OUTLINE') {
+// The plugin window: says hello, keeps a /next long poll open and answers jobs with `answer(job)`. With `win` it is
+// a window of its own, as the plugin's windows are; without, a window from before window ids.
+function plugin(base, token, answer = () => 'OUTLINE', { win = null, file = 'FILE', name = 'Mockups' } = {}) {
   const H = { 'X-Bridge-Token': token, 'Content-Type': 'application/json' };
   const controller = new AbortController();
   const jobs = [];
-  const hello = fileKey => fetch(base + '/hello', { method: 'POST', headers: H, body: JSON.stringify({ fileKey, fileName: 'Mockups' }) });
+  let polls = 0;
+  const hello = (fileKey, fileName = name) => fetch(base + '/hello', { method: 'POST', headers: H, body: JSON.stringify({ fileKey, fileName, ...(win ? { win } : {}) }) });
   const loop = (async () => {
-    await hello('FILE');
+    await hello(file);
     while (!controller.signal.aborted) {
       let r;
-      try { r = await fetch(base + '/next', { headers: H, signal: controller.signal }); } catch (e) { return; }
+      polls++;
+      try { r = await fetch(base + '/next' + (win ? '?win=' + win + '&file=' + file : ''), { headers: H, signal: controller.signal }); } catch (e) { return; }
       if (r.status !== 200) continue;
       const job = await r.json();
       jobs.push(job);
@@ -62,7 +67,7 @@ function plugin(base, token, answer = () => 'OUTLINE') {
   })();
   const stop = async () => { controller.abort(); await loop; };
   cleanups.push(stop);
-  return { jobs, stop, hello };
+  return { jobs, stop, hello, polls: () => polls };
 }
 
 async function start(options) {
@@ -104,7 +109,8 @@ test('listening needs the toggle AND a live plugin; only new top-level comments 
   await s.pollComments();
   assert.deepEqual(rest.gets, []);
 
-  // Plugin connects: the first poll of each file only records what is there.
+  // Plugin connects: the first poll of each file puts its open threads into the plan and stops there, so comments
+  // from before wake neither a session nor the agent.
   rest.add('FILE', { message: 'old one' });
   const p = plugin(base, s.token);
   await sleep(100);
@@ -120,7 +126,9 @@ test('listening needs the toggle AND a live plugin; only new top-level comments 
   assert.deepEqual(agent.seen.map(e => [e.id, e.fileName, e.nodeId, e.text]), [[top.id, 'Mockups', '1:2', 'Move the chip']]);
   const events = (await api('/events')).body;
   assert.deepEqual(events.map(e => e.fileKey + (e.replyTo ? ' reply' : '')).sort(), ['FILE', 'FILE reply', 'OTHER']);
-  assert.deepEqual((await api('/plan')).body.tasks.map(t => t.text).sort(), ['#2 Move the chip', '#4 elsewhere']);
+  assert.deepEqual((await api('/plan')).body.tasks.map(t => t.text + ' ' + t.fileKey).sort(), ['#1 old one FILE', '#2 Move the chip FILE', '#4 elsewhere OTHER']);
+  // Each window shows the plan of its own file.
+  assert.deepEqual((await api('/plan?file=OTHER')).body.tasks.map(t => t.text), ['#4 elsewhere']);
 
   // Toggle off: polled and reported, not handed to the agent; the agent's queue is cleared.
   await api('/listen', { on: false });
@@ -371,4 +379,142 @@ test('a plugin reopened after a while: /next does not start a queued comment bef
   assert.deepEqual(s.agent.state(), { running: null, queued: 1 });
   assert.equal(readFileSync(join(h, 'runs.txt'), 'utf8'), 'x\n');
   await api('/listen', { on: false });
+});
+
+// ---- the plugin open in several files
+
+const twoWindows = async (s, base) => {
+  const a = plugin(base, s.token, () => 'A', { win: 'wa', file: 'FILE' });
+  await sleep(50);
+  const b = plugin(base, s.token, () => 'B', { win: 'wb', file: 'SECOND', name: 'Second file' });
+  await sleep(100);
+  return { a, b };
+};
+
+test('two plugin windows wait side by side; a job naming a file runs in that file, any other in the window opened last', async () => {
+  home();
+  const { s, base, api } = await start({ agent: recordingAgent() });
+  const { a, b } = await twoWindows(s, base);
+  const status = (await api('/status')).body;
+  assert.equal(status.connected, true);
+  assert.deepEqual(status.file, { fileKey: 'SECOND', fileName: 'Second file' });
+  assert.deepEqual(status.files, [{ fileKey: 'FILE', fileName: 'Mockups' }, { fileKey: 'SECOND', fileName: 'Second file' }]);
+  assert.equal((await api('/job', { code: 'return 1' })).body.result, 'B');
+  assert.equal((await api('/job', { code: 'return 1', file: 'FILE' })).body.result, 'A');
+  assert.equal((await api('/job', { code: 'return 1', file: 'mock' })).body.result, 'A', 'a part of the file name');
+  assert.equal((await api('/job', { code: 'return 1', file: 'SECOND' })).body.result, 'B');
+  assert.equal(b.jobs[0].file, undefined, 'the routing stays in the server');
+  const unknown = await api('/job', { code: 'return 1', file: 'nope' });
+  assert.equal(unknown.status, 400);
+  assert.match(unknown.body.error, /^no open file matches "nope"/);
+  // A known file without a window: the job waits for one, it never runs in another file.
+  const closed = await api('/job', { code: 'return 1', file: 'OTHER', timeoutMs: 150 });
+  assert.equal(closed.status, 504);
+  assert.equal(a.jobs.length + b.jobs.length, 4);
+  // Neither window pushed the other off its long poll: one poll per job, plus the open one.
+  await sleep(200);
+  assert.deepEqual([a.polls(), b.polls()], [3, 3]);
+  // The window opened last is closed: the other one is the current file.
+  await b.stop();
+  await sleep(400);
+  const left = (await api('/status')).body;
+  assert.deepEqual([left.file.fileKey, left.files], ['FILE', undefined]);
+  assert.equal((await api('/job', { code: 'return 1' })).body.result, 'A');
+});
+
+test('a closed plugin window is noticed in seconds, not after the whole poll window', async () => {
+  home();
+  const { s, base, api } = await start({ agent: recordingAgent(), connectedMs: 40000, goneMs: 100 });
+  const p = plugin(base, s.token, () => 1, { win: 'w1' });
+  await sleep(100);
+  assert.equal((await api('/job', { code: 'return 1' })).body.result, 1);
+  await sleep(150);
+  assert.equal((await api('/status')).body.connected, true, 'an answered window polls again: it stays connected');
+  await p.stop();
+  await sleep(200);
+  assert.equal((await api('/status')).body.connected, false);
+});
+
+test('the plan is kept per file: a change names its file or goes to the current one; other files keep theirs', async () => {
+  const h = home();
+  // An entry from before plans were per file shows everywhere; a thread listed twice is one entry.
+  writeFileSync(join(h, 'data', 'plan.json'), JSON.stringify([{ text: 'Everywhere', state: 'todo' },
+    { text: '#7 twice', state: 'todo', commentId: 'x7', number: '7', fileKey: 'FILE' }, { text: '#7 twice', state: 'todo', commentId: 'x7', number: '7', fileKey: 'FILE' }]));
+  const { s, base, api } = await start({ agent: recordingAgent() });
+  assert.deepEqual((await api('/plan')).body.tasks.map(t => t.text), ['Everywhere', '#7 twice']);
+  await twoWindows(s, base);
+  const texts = async key => (await api('/plan?file=' + key)).body.tasks.map(t => t.state + ' ' + t.text);
+  assert.deepEqual(await texts('SECOND'), ['todo Everywhere']);
+  assert.deepEqual(await texts('FILE'), ['todo Everywhere', 'todo #7 twice']);
+  // Without a file: the current window's, SECOND. Entries without a file are taken over by the first new plan.
+  const set = (await api('/plan', { tasks: [{ text: 'Second step', state: 'todo' }] })).body;
+  assert.deepEqual(set, { file: 'SECOND', fileName: 'Second file', tasks: [{ text: 'Second step', state: 'todo', fileKey: 'SECOND' }] });
+  await api('/plan', { file: 'FILE', tasks: [{ text: 'First step', state: 'active' }] });
+  assert.deepEqual((await api('/plan', { file: 'mockups', add: 'Step two' })).body.tasks.map(t => t.text), ['First step', '#7 twice', 'Step two']);
+  assert.deepEqual(await texts('SECOND'), ['todo Second step']);
+  await api('/plan', { file: 'SECOND', add: 'Step two', state: 'todo' });
+  await api('/plan', { file: 'FILE', mark: 'Step', state: 'done' });
+  assert.deepEqual(await texts('FILE'), ['active First step', 'todo #7 twice', 'done Step two']);
+  assert.deepEqual(await texts('SECOND'), ['todo Second step', 'todo Step two'], 'the same text in another file is another step');
+  await api('/plan', { file: 'FILE', clearDone: true });
+  assert.deepEqual(await texts('FILE'), ['active First step', 'todo #7 twice']);
+  const unknown = await api('/plan', { file: 'nope', add: 'x' });
+  assert.equal(unknown.status, 400);
+  assert.match(unknown.body.error, /^no open file matches "nope"/);
+});
+
+test('comments of a file keep coming after the plugin is opened in another one; the agent takes those of every open file', async () => {
+  home();
+  const agent = recordingAgent();
+  const { s, rest, base, api } = await start({ agent });
+  await api('/listen', { on: true });
+  const { a } = await twoWindows(s, base);
+  await s.pollComments(); // baselines
+  const inFirst = rest.add('FILE', { message: 'in the first file' });
+  rest.add('SECOND', { message: 'in the second file' });
+  await s.pollComments();
+  assert.deepEqual(agent.seen.map(e => [e.fileKey, e.fileName, e.text]), [['FILE', 'Mockups', 'in the first file'], ['SECOND', 'Second file', 'in the second file']]);
+  assert.deepEqual((await api('/plan?file=FILE')).body.tasks.map(t => t.commentId), [inFirst.id]);
+  // The first window is closed: its comments still arrive as events and plan entries, but nobody acts on them.
+  await a.stop();
+  await sleep(400);
+  rest.add('FILE', { message: 'after closing' });
+  await s.pollComments();
+  assert.equal(agent.seen.length, 2);
+  assert.ok((await api('/events')).body.some(e => e.text === 'after closing'));
+});
+
+test('several Figma tokens: each file is read and answered with the token that reaches it', async () => {
+  const h = home();
+  writeFileSync(join(h, 'data', 'figma-token-work.txt'), 'figd_work\n');
+  writeFileSync(join(h, 'data', 'figma-token-empty.txt'), '');
+  const { s, rest, base, api } = await start({ agent: recordingAgent() });
+  rest.access.SECOND = 'figd_work';
+  rest.access.OTHER = 'figd_nobody';
+  plugin(base, s.token, () => 1, { win: 'w2', file: 'SECOND' });
+  await sleep(100);
+  await s.pollComments();
+  assert.deepEqual(rest.tokens.filter(t => t.startsWith('SECOND')), ['SECOND figd_test', 'SECOND figd_work'], 'figma-token.txt first, an empty file skipped');
+  rest.tokens.length = 0;
+  await s.pollComments();
+  assert.deepEqual(rest.tokens.filter(t => t.startsWith('SECOND')), ['SECOND figd_work'], 'the token that worked is tried first');
+  assert.deepEqual((await api('/comments/reply', { fileKey: 'SECOND', commentId: 'c1', text: 'ok' })).body, { ok: true, id: 'r1' });
+  assert.equal(rest.posted[0].token, 'figd_work');
+  // A file no token reaches is named, and a file that works after it does not hide the error.
+  assert.match((await api('/status')).body.comments, /^błąd: OTHER: HTTP 403 .*file_comments/);
+});
+
+test('events nobody picked up do not pile up: 3 days, one per comment, the 200 newest', async () => {
+  const h = home();
+  const at = ms => new Date(Date.now() - ms).toISOString();
+  const event = (id, ms) => JSON.stringify({ at: at(ms), type: 'comment', id, text: 'e' + id });
+  writeFileSync(join(h, 'data', 'events.jsonl'), [event('old', 4 * 24 * 3600e3), event('a', 60e3), event('a', 50e3), event('b', 40e3)].join('\n') + '\n');
+  const first = await start({ agent: recordingAgent() });
+  assert.deepEqual(readFileSync(join(h, 'data', 'events.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l).id), ['a', 'b']);
+  assert.deepEqual((await first.api('/events')).body.map(e => e.id), ['a', 'b']);
+  await first.s.close();
+  writeFileSync(join(h, 'data', 'events.jsonl'), Array.from({ length: 250 }, (_, i) => event('n' + i, 1000)).join('\n') + '\n');
+  const second = await start({ agent: recordingAgent() });
+  const kept = (await second.api('/events')).body;
+  assert.deepEqual([kept.length, kept[0].id, kept.at(-1).id], [200, 'n50', 'n249']);
 });

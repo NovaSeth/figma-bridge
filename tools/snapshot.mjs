@@ -23,7 +23,7 @@ const found = page.children.flatMap(n => n.type === 'FRAME' ? [{ f: n, name: saf
 // case-insensitive: on macOS "Home" and "home" would be one file
 for (const s of found) { let n = s.name, i = 1; while (taken[n.toLowerCase()]) n = s.name + '-' + ++i; taken[n.toLowerCase()] = true; s.name = n; }
 const part = found.slice(${start}, ${start + BATCH}); let done = 0;
-for (const { f, name } of part) { await shot(f, { name: 'snap__' + name, scale: 1 }); progress(++done / part.length); }
+for (const { f, name } of part) { await shot(f, { name: 'snap__' + name, scale: 1 }); await progress(++done / part.length); }
 return { total: found.length, done: part.length };`);
   let result;
   // No prelude: the job needs no helpers, and a project prelude may switch the current page or load fonts first.
