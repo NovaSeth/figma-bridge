@@ -154,7 +154,7 @@
   const stopClock = () => { clearInterval(ticker); $('side').textContent = ''; };
   // The plugin may be open in several files at once. Each window has its own id, waits for jobs on its own and
   // shows the plan of its own file only; the server sends a job for a file to the window of that file.
-  const WIN = Math.random().toString(36).slice(2, 10);
+  const WIN = Math.random().toString(36).slice(2, 10), OPENED = Date.now();
   // The server learns the plugin's file from /hello; after a lost connection (a restarted server: reinstall,
   // KeepAlive) it is sent again before the next /next, since a long poll may take 25 s to answer.
   let fileContext = null, helloDue = false, knowFile;
@@ -162,7 +162,7 @@
   const fileKnown = new Promise(ok => { knowFile = ok; setTimeout(ok, 1500); });
   const fileQuery = () => 'file=' + encodeURIComponent(fileContext && fileContext.fileKey || '');
   const hello = () => { if (!fileContext) return; helloDue = false;
-    fetch(BASE + '/hello', { method: 'POST', headers: H, body: JSON.stringify(Object.assign({ win: WIN }, fileContext)) }).then(r => { if (!r.ok) helloDue = true; }, () => { helloDue = true; }); };
+    fetch(BASE + '/hello', { method: 'POST', headers: H, body: JSON.stringify(Object.assign({ win: WIN, openedAt: OPENED }, fileContext)) }).then(r => { if (!r.ok) helloDue = true; }, () => { helloDue = true; }); };
 
   onmessage = async e => {
     const m = e.data && e.data.pluginMessage; if (!m) return;
@@ -234,7 +234,7 @@
           }, job.timeoutMs + 1000) : null;
           running.set(job.id, { label: job.label, t: Date.now(), watch }); jobProgress = null; ostatniRuch = Date.now();
           note = running.size > 1 ? running.size + ' kroki w toku' : job.dryRun ? 'Próba w toku (bez zapisu)' : 'Krok w toku'; startClock(); render();
-          parent.postMessage({ pluginMessage: { type: 'job', id: job.id, code: job.code, prelude: job.prelude || '', dryRun: !!job.dryRun } }, '*');
+          parent.postMessage({ pluginMessage: { type: 'job', id: job.id, code: job.code, prelude: job.prelude || '', dryRun: !!job.dryRun, timeoutMs: job.timeoutMs || 0 } }, '*');
         } else if (r.status === 204) { if (!running.size) { status = { kind: 'ok', text: 'Czekam na zadania' }; render(); } }
         else { status = { kind: 'err', text: 'Most odrzucił połączenie (' + r.status + ')' }; note = 'Uruchom wtyczkę ponownie'; render(); await sleep(3000); }
       } catch (err) { helloDue = true; status = { kind: 'err', text: 'Serwer mostu nie działa' }; note = 'Uruchom ponownie: node install.mjs'; render(); await sleep(2000); }

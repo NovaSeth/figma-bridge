@@ -410,25 +410,28 @@ const find = async (query, opts) => {
     if (!pages.length) throw new Error('find: no page ' + JSON.stringify(o.page) + ' (pages: ' + figma.root.children.map(p => p.name).join(', ') + ')');
     for (const p of pages) await p.loadAsync();
   } else await figma.loadAllPagesAsync();
-  const lines = [], skip = figma.skipInvisibleInstanceChildren;
+  const lines = [];
   let total = 0, scanned = 0;
-  // Hidden layers inside instances are most of a big file and never what a search is after.
-  figma.skipInvisibleInstanceChildren = true;
-  try {
-    for (const page of pages) {
-      // A pause lets other code run, and that code may set the flag: it is put back after every pause.
-      await _breathe();
-      figma.skipInvisibleInstanceChildren = true;
-      for (const n of types ? page.findAllWithCriteria({ types: types }) : page.findAll()) {
-        if (!(++scanned & 511)) { await _breathe(); figma.skipInvisibleInstanceChildren = true; }
-        const inName = re.test(n.name), byText = !inName && n.type === 'TEXT' && re.test(n.characters);
-        if (!inName && !byText || ++total > limit) continue;
-        let top = n;
-        while (top.parent && top.parent.type !== 'PAGE') top = top.parent;
-        lines.push(n.id + ' ' + n.type + ' ' + _str(n.name) + (byText ? ' text=' + _str(n.characters) : '') + ' · ' + page.name + (top !== n ? ' › ' + _clip(top.name, 40) : ''));
-      }
+  // Hidden layers inside instances are most of a big file and never what a search is after. The flag is global
+  // to the plugin, so it is on only while the search itself runs, never across a pause: a job running beside
+  // this one would search with it too.
+  const search = page => {
+    const skip = figma.skipInvisibleInstanceChildren;
+    figma.skipInvisibleInstanceChildren = true;
+    try { return types ? page.findAllWithCriteria({ types: types }) : page.findAll(); }
+    finally { figma.skipInvisibleInstanceChildren = !!skip; }
+  };
+  for (const page of pages) {
+    await _breathe();
+    for (const n of search(page)) {
+      if (!(++scanned & 511)) await _breathe();
+      const inName = re.test(n.name), byText = !inName && n.type === 'TEXT' && re.test(n.characters);
+      if (!inName && !byText || ++total > limit) continue;
+      let top = n;
+      while (top.parent && top.parent.type !== 'PAGE') top = top.parent;
+      lines.push(n.id + ' ' + n.type + ' ' + _str(n.name) + (byText ? ' text=' + _str(n.characters) : '') + ' · ' + page.name + (top !== n ? ' › ' + _clip(top.name, 40) : ''));
     }
-  } finally { figma.skipInvisibleInstanceChildren = !!skip; }
+  }
   if (!total) return 'no match for ' + JSON.stringify(String(query));
   return lines.join('\n') + (total > limit ? '\n… ' + (total - limit) + ' more (limit ' + limit + ')' : '');
 };

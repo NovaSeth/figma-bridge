@@ -54,6 +54,9 @@ test('a job the plugin never answers stops showing as running once nobody waits 
   assert.equal((await stuck).status, 504);
   assert.ok(await until(() => ui.$('now').textContent === 'Krok przekroczył czas', 4000), 'still shows: ' + ui.$('now').textContent);
   assert.match(ui.$('state').className, /\berr\b/);
+  // The plugin knows the limit too: the stuck job no longer counts as running beside the next one, whose
+  // failure is cleaned up as usual.
+  assert.equal((await api('/job', { code: 'figma.createFrame(); throw new Error("boom")' })).body.error, 'boom (posprzątano 1 niedokończonych węzłów)');
   // The window keeps working: the next job runs and the error clears.
   assert.equal((await api('/job', { code: 'return 7' })).body.result, 7);
   assert.ok(await until(() => ui.$('now').textContent === 'Czekam na zadania'), ui.$('now').textContent);

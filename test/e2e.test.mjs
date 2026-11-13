@@ -165,6 +165,28 @@ test('--file sends the job, its plan step and its project to one Figma file: a k
   assert.deepEqual(fx.mock.snapshot(), before);
 });
 
+test('run.mjs sends its job to the file the status named, so the project prelude and the job agree', async () => {
+  const temp = mkdtempSync(join(tmpdir(), 'bridge-run-'));
+  mkdirSync(join(temp, 'data'));
+  writeFileSync(join(temp, 'data', 'token.txt'), 'fake-token');
+  const bodies = [];
+  const fake = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', d => { body += d; });
+    req.on('end', () => {
+      if (req.url !== '/status') bodies.push([req.url, JSON.parse(body).file]);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(req.url === '/status' ? { connected: true, file: { fileKey: 'SEEN', fileName: 'Seen' } } : { ok: true, result: 1, tasks: [] }));
+    });
+  });
+  await new Promise(ok => fake.listen(0, '127.0.0.1', ok));
+  try {
+    const child = spawn(process.execPath, [join(root, 'run.mjs'), join(work, 'step.js'), '--step', 'x'], { env: { ...process.env, BRIDGE_HOME: temp, BRIDGE_PORT: String(fake.address().port) } });
+    assert.equal(await new Promise(ok => child.on('exit', ok)), 0);
+    assert.deepEqual(bodies, [['/plan', 'SEEN'], ['/job', 'SEEN'], ['/plan', 'SEEN']]);
+  } finally { await new Promise(ok => fake.close(ok)); rmSync(temp, { recursive: true, force: true }); }
+});
+
 test('plan.mjs sets and marks the plan of one file and says which', async () => {
   const set = await runPlan('--file', 'TESTFILE', 'x:Done step', '>:Active step', '-:Later');
   assert.deepEqual([set.code, set.out], [0, '1/3 · Test file']);

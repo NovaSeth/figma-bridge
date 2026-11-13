@@ -239,3 +239,18 @@ test('the helpers still work in a plugin window from before breathe(): the serve
   assert.match(await run(`return await inspect('page', { depth: 0 })`), /^PAGE "Screens" /);
   assert.match(await run(`return await library('styles')`), /^PAINT 1\n/);
 });
+
+test('find switches skipInvisibleInstanceChildren on only while it searches, not while it pauses: a job running beside it keeps its own setting', async () => {
+  const fx = await createFixture();
+  const big = fx.figma.createPage();
+  big.name = 'Big';
+  await fx.figma.setCurrentPageAsync(big);
+  for (let i = 0; i < 2500; i++) fx.figma.createFrame().name = 'Row ' + i;
+  await fx.figma.setCurrentPageAsync(fx.screens);
+  const plugin = loadPlugin(fx.mock);
+  const scan = plugin.run(paused(`return (await find('Row 2499', { page: 'Big' })).indexOf('Row 2499') > 0;`), { prelude: builtInPrelude() });
+  const beside = plugin.run('const seen = new Set(); for (let i = 0; i < 8; i++) { seen.add(figma.skipInvisibleInstanceChildren); await new Promise(ok => setTimeout(ok, 0)); } return Array.from(seen);');
+  const [a, b] = await Promise.all([scan, beside]);
+  assert.equal(a.result, true, a.error);
+  assert.deepEqual(b.result, [false]);
+});

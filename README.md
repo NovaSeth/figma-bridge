@@ -128,8 +128,9 @@ przekroczył czas”, a skrypt, którego wtyczka nie skończyła, działa dalej,
 Wtyczkę można otworzyć w kilku plikach jednocześnie. Każde okno czeka na zadania osobno i pokazuje plan tylko
 swojego pliku.
 
-- Polecenie bez wskazanego pliku trafia do okna otwartego jako ostatnie. Gdy to okno zniknie, do tego, które
-  odezwało się najpóźniej.
+- Polecenie bez wskazanego pliku trafia do okna otwartego jako ostatnie, a gdy to okno zniknie, do najpóźniej
+  otwartego z pozostałych. Każde narzędzie MCP i `run.mjs` najpierw pyta serwer o ten plik, a potem wysyła
+  zadanie właśnie do niego, więc zadanie nie trafi gdzie indziej, niż pokazał status.
 - `figma_status` wymienia pozostałe pliki w linii `other open files`. `figma_status {file: "fragment nazwy"}`
   (albo klucz pliku) przełącza sesję Claude Code na ten plik: od tej chwili wszystkie narzędzia, także plan,
   pracują w nim.
@@ -345,8 +346,13 @@ do jednego z nich.
   Twoje pliki ustawień Claude Code (ich reguły `allow` nie poszerzą tej listy) i zamyka operacje na plikach
   w katalogu roboczym: folderze projektu albo `data/scratch/`. Wymaga Claude Code z flagą `--restricted`.
   Ten sam płot obowiązuje w MCP tej sesji: `figma_run {file}` bierze skrypty tylko z katalogu roboczego
-  (`BRIDGE_FILE_ROOT`), a wszystkie zadania idą do pliku komentarza (`FIGMA_FILE`). Bez tego namówiona sesja
-  mogłaby wczytać dowolny plik z dysku jako „skrypt” i wynieść jego treść w komunikacie błędu.
+  (`BRIDGE_FILE_ROOT`), a wszystkie zadania idą do pliku komentarza (`FIGMA_FILE`). Sesja nie może przełączyć się
+  na inny plik (`figma_status {file}` odmawia i nie wymienia innych plików) ani połączyć projektu
+  z `.figma-bridge.json`. Bez tego namówiona sesja mogłaby wczytać dowolny plik z dysku jako „skrypt”, wynieść
+  jego treść w komunikacie błędu albo zmienić inny otwarty plik.
+- Katalog roboczy sesji komentarza jest dla niej zapisywalny. Gdy jest nim folder projektu, namówiona sesja może
+  zmienić jego preludia i szablon promptu, czyli wpłynąć na kolejne komentarze i skrypty tego projektu. Trzymaj
+  w folderze projektu tylko to, co Claude ma czytać, i przeglądaj zmiany po komentarzach od osób spoza zespołu.
 - Treść komentarza trafia do promptu. Gdy słuchanie jest włączone, każdy, kto może komentować plik, może zlecić
   Claude'owi zmianę. Włączaj je tylko w plikach z zaufanymi osobami.
 
@@ -366,7 +372,8 @@ w Settings → Security.
 ## Gdy coś nie działa
 
 - **„the Claude Bridge plugin is not open in Figma”**: otwórz wtyczkę w pliku i nie zamykaj jej okna. Serwer uznaje
-  wtyczkę za zamkniętą 40 s po jej ostatnim zapytaniu.
+  okno za zamknięte, gdy przez 10 s nie czeka ono na zadanie. Zadanie, które okno wzięło i z którym się zamknęło,
+  kończy się od razu błędem „okno wtyczki zamknęło się, zanim odesłało wynik”.
 - **Okno wtyczki: „Serwer mostu nie działa”**: sprawdź `launchctl print gui/$(id -u)/local.claude-figma-bridge`
   i logi `data/logs/server.log` oraz `server.err`. Restart: `launchctl kickstart -k gui/$(id -u)/local.claude-figma-bridge`
   albo ponownie `node install.mjs`. Komunikat „Port 8765 is taken” w `server.err` oznacza, że działa drugi serwer

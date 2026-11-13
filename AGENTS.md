@@ -33,7 +33,8 @@ A failing tool answers `error: …` with `isError`. Plugin closed: `the Claude B
    is open in. Do not act on those from `figma_comments` too.
 8. The plugin may be open in several files (`other open files:`). Every tool works in one of them: the file chosen
    with `figma_status {file}` (or `FIGMA_FILE` in the environment of `mcp.mjs`, `run.mjs`, `plan.mjs`), else the
-   file the plugin was opened in last. Check `file:` before editing. The plan is kept per file.
+   file the plugin was opened in last. Check `file:` before editing. The plan is kept per file. A session started
+   with `FIGMA_FILE` stays in that file: `figma_status {file}` is refused there.
 
 ## Jobs (`figma_run` code, `run.mjs` scripts)
 
@@ -56,7 +57,8 @@ A failing tool answers `error: …` with `isError`. Plugin closed: `the Claude B
   write stays. When another job ran at the same time nothing is removed (the error says so): the newcomers may
   be that job's.
 - A timeout answers `ok: false`, but a job the plugin already started keeps running. `timeoutMs` may exceed
-  5 minutes (the server keeps the answer alive).
+  5 minutes (the server keeps the answer alive). A job whose window closed before answering fails within
+  seconds; it may have run in part.
 - `progress()` reaches the window ten times a second at most, so calling it for every node is fine.
 - An answer over 20000 chars saves the full result to `<data>/out/result-<ms>.json`. The answer then carries
   `resultFile`, `resultChars` and the first 10000 chars in `result`.
@@ -168,8 +170,8 @@ comments    #12 id=<id> [reply-to=<root id>] @author [node=<id>] [file=<key> whe
 - A fix or a feature starts with a test that fails for the right reason. Wait on a condition, not on a fixed
   time, when a test depends on a child process. `test/security.test.mjs` holds the security contract by OWASP
   Top 10 heading: every request needs the token, plugin-given names stay inside `data/out`, the comment agent's
-  session reads job files from its own folder only (`BRIDGE_FILE_ROOT`), `link.mjs` never replaces a project
-  from elsewhere.
+  session reads job files from its own folder only (`BRIDGE_FILE_ROOT`), stays in the comment's file
+  (`FIGMA_FILE`) and links no project, `link.mjs` never replaces a project from elsewhere.
 - The plugin window may be older than the server (it is replaced only when reopened): the server keeps
   answering a window without `?win=`, and `prelude.js` must not assume what a newer `code.js` passes in.
 - Output size is part of the contract: tests hold the tool list to ≤ 2900 chars and put budgets on inspect, find

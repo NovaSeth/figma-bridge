@@ -204,3 +204,21 @@ test('progress() called for every node reaches the window a few times, and the e
   await plugin.run('progress(0.3, "next job")');
   assert.equal(mock.messages.filter(m => m.type === 'progress').at(-1).note, 'next job');
 });
+
+test('a job that never returns stops counting as running once its time limit is over', async () => {
+  const { mock } = await createFixture();
+  const plugin = loadPlugin(mock);
+  plugin.run('await new Promise(() => {});', { timeoutMs: 40 }); // the server gives up on it after 40 ms
+  await new Promise(ok => setTimeout(ok, 120));
+  const later = await plugin.run(`figma.createFrame().name = 'half done'; throw new Error('boom');`);
+  assert.equal(later.error, 'boom (posprzątano 1 niedokończonych węzłów)');
+});
+
+test('skipInvisibleInstanceChildren set by a running job is not reset by a job that starts meanwhile', async () => {
+  const plugin = loadPlugin(createFigma());
+  const first = plugin.run('figma.skipInvisibleInstanceChildren = true; await new Promise(ok => setTimeout(ok, 30)); return figma.skipInvisibleInstanceChildren;');
+  const second = plugin.run('return 1');
+  assert.equal((await first).result, true);
+  await second;
+  assert.equal((await plugin.run('return figma.skipInvisibleInstanceChildren')).result, false, 'once nothing runs, the next job starts clean');
+});

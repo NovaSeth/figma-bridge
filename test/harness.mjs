@@ -20,9 +20,9 @@ export function loadPlugin(mock) {
   return {
     ctx,
     // Resolves with the plugin's result message for this job.
-    async run(code, { prelude = '', dryRun = false, legacy = false } = {}) {
+    async run(code, { prelude = '', dryRun = false, legacy = false, timeoutMs } = {}) {
       const id = 'job-' + (++n), from = mock.messages.length;
-      await mock.figma.ui.onmessage(legacy ? { type: 'job', id, code } : { type: 'job', id, code, prelude, dryRun });
+      await mock.figma.ui.onmessage(legacy ? { type: 'job', id, code } : Object.assign({ type: 'job', id, code, prelude, dryRun }, timeoutMs ? { timeoutMs } : {}));
       return mock.messages.slice(from).find(m => m.type === 'result' && m.id === id);
     },
   };

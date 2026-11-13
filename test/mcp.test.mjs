@@ -390,17 +390,54 @@ test('FIGMA_FILE ties a session to one file: jobs and plan changes name it; no w
   try {
     assert.equal((await tied.client.call('figma_inspect', { target: 'page' })).text, 'PAGE "P" 1:1');
     assert.equal((await tied.client.call('figma_plan', { add: 'x' })).text, '[>] x');
-    assert.match((await tied.client.call('figma_status')).text, /^plugin: connected\nfile: "Tied" K\nother open files: "Current" CURRENT .*\npage: "P" 0:1\n/);
-    assert.deepEqual(tied.requests.map(r => [r.url, r.body.file]), [['/job', 'K'], ['/plan', 'K'], ['/job', 'K']]);
+    // The tie holds for the session: it is what keeps the session of a comment (untrusted text) in the comment's
+    // file. No other file is offered, and asking for one is refused.
+    const status = await tied.client.call('figma_status');
+    assert.match(status.text, /^plugin: connected\nfile: "Tied" K\npage: "P" 0:1\n/);
+    assert.doesNotMatch(status.text, /other open files|CURRENT/);
+    const away = await tied.client.call('figma_status', { file: 'CURRENT' });
+    assert.equal(away.isError, true);
+    assert.match(away.text, /^error: this session is tied to file K/);
+    await tied.client.call('figma_inspect', { target: 'page' });
+    assert.deepEqual(tied.requests.map(r => [r.url, r.body.file]), [['/job', 'K'], ['/plan', 'K'], ['/job', 'K'], ['/job', 'K']]);
   } finally { await tied.stop(); }
   const away = await fakeBridge({ connected: true, file: { fileKey: 'CURRENT', fileName: 'Current' } }, answer, { FIGMA_FILE: 'K' });
   try {
     const r = await away.client.call('figma_inspect', { target: 'page' });
     assert.equal(r.isError, true);
     assert.match(r.text, /plugin is not open in file K /);
-    assert.match((await away.client.call('figma_status')).text, /^plugin: not connected \(open Claude Bridge in file K\)\nfile: "" K\nother open files: "Current" CURRENT /);
+    assert.match((await away.client.call('figma_status')).text, /^plugin: not connected \(open Claude Bridge in file K\)\nfile: "" K\nproject: /);
     assert.deepEqual(away.requests, []);
   } finally { await away.stop(); }
+  // A person may name the file by a part of its name, as with run.mjs --file.
+  const named = await fakeBridge({ connected: true, file: { fileKey: 'CURRENT', fileName: 'Current' }, files: [{ fileKey: 'CURRENT', fileName: 'Current' }, { fileKey: 'K', fileName: 'Tied file' }] }, answer, { FIGMA_FILE: 'tied' });
+  try {
+    assert.equal((await named.client.call('figma_inspect', { target: 'page' })).text, 'PAGE "P" 1:1');
+    assert.equal(named.requests[0].body.file, 'K');
+  } finally { await named.stop(); }
+});
+
+test('a job runs in the file the status named, also when nothing ties the session to a file', async () => {
+  // Without it the server would pick the window when the job arrives: after the current window closed, another
+  // file's, while the prelude was built for the first.
+  const open = await fakeBridge({ connected: true, file: { fileKey: 'SEEN', fileName: 'Seen' } }, url => (url === '/job' ? [200, { ok: true, result: 'PAGE "P" 1:1' }] : [200, { tasks: [] }]));
+  try {
+    await open.client.call('figma_inspect', { target: 'page' });
+    await open.client.call('figma_run', { code: 'return 1', noPrelude: true, step: 'A step' });
+    assert.deepEqual(open.requests.map(r => [r.url, r.body.file]), [['/job', 'SEEN'], ['/plan', 'SEEN'], ['/job', 'SEEN'], ['/plan', 'SEEN']]);
+  } finally { await open.stop(); }
+});
+
+test('the session of a comment links no project: a .figma-bridge.json it wrote into its folder stays a file', async () => {
+  const folder = join(home, 'scratch-of-a-comment');
+  mkdirSync(folder);
+  writeFileSync(join(folder, '.figma-bridge.json'), JSON.stringify({ name: 'planted', files: ['UNOWNEDKEY'], preludes: ['p.js'] }));
+  writeFileSync(join(folder, 'p.js'), 'figma.root.name = "planted";');
+  const session = startMcp({ ...env, BRIDGE_FILE_ROOT: folder, FIGMA_FILE: 'TESTFILE' }, folder);
+  try {
+    await session.call('figma_status');
+    assert.ok(!existsSync(join(home, 'projects', 'planted')));
+  } finally { await session.close(); }
 });
 
 test('a server error is a tool error that says what failed, not an empty answer', async () => {

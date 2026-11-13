@@ -103,8 +103,10 @@ const ensureServer = () => starting || (starting = (async () => {
 })().finally(() => { starting = null; }));
 
 // The file this session works in: FIGMA_FILE, or what figma_status {file} chose. null: the window the plugin
-// was opened in last, which the server knows.
-let pinned = process.env.FIGMA_FILE || null;
+// was opened in last, which the server knows. FIGMA_FILE ties the session for good: it is what keeps the session
+// of a comment, which is untrusted text, in the comment's file.
+const tied = process.env.FIGMA_FILE || null;
+let pinned = tied;
 // The server says whether a plugin window is connected; one from before that flag is judged by its last poll:
 // the open window long-polls /next (25 s each), and a job sent to a closed one would only wait out its timeout.
 const isConnected = s => (typeof s.connected === 'boolean' ? s.connected : s.pluginSeenMsAgo != null && s.pluginSeenMsAgo < 40000);
@@ -113,7 +115,13 @@ const openFiles = s => (isConnected(s) ? s.files || (s.file && s.file.fileKey ? 
 // The session's file as { fileKey, fileName, open }: the pinned one, else the server's current file.
 const sessionFile = s => {
   if (!pinned) return Object.assign({ open: isConnected(s) }, s.file || {});
-  const hit = openFiles(s).find(f => f.fileKey === pinned);
+  let hit = openFiles(s).find(f => f.fileKey === pinned);
+  // FIGMA_FILE may be a part of a file's name, as --file of run.mjs: the one open file it fits. What looks like
+  // a file key is a key and nothing else.
+  if (!hit && !/^[A-Za-z0-9]{16,}$/.test(pinned)) {
+    const named = openFiles(s).filter(f => (f.fileName || '').toLowerCase().includes(pinned.toLowerCase()));
+    if (named.length === 1) { hit = named[0]; pinned = hit.fileKey; }
+  }
   return Object.assign({ fileKey: pinned, fileName: null, open: !!hit }, hit || {});
 };
 async function pluginStatus() {
@@ -122,12 +130,14 @@ async function pluginStatus() {
   if (!f.open) throw new Error('the Claude Bridge plugin is not open in ' + (pinned ? 'file ' + pinned : 'Figma') + ' (Plugins > Development > Claude Bridge)');
   return Object.assign(s, { file: f });
 }
-const job = (code, { prelude = '', dryRun = false, timeoutMs = 60000, label = 'mcp' } = {}) =>
-  api('/job', Object.assign({ code, label, timeoutMs, dryRun, prelude }, pinned ? { file: pinned } : {}), timeoutMs + 5000);
+// file: the file the status just named. The job is sent to that file's window, not to "the current one": the
+// server would choose when the job arrives, and after the current window closed that is another file.
+const job = (code, { file = pinned, prelude = '', dryRun = false, timeoutMs = 60000, label = 'mcp' } = {}) =>
+  api('/job', Object.assign({ code, label, timeoutMs, dryRun, prelude }, file ? { file } : {}), timeoutMs + 5000);
 // Knowledge tools run a prelude helper with the built-in prelude only: a project prelude may switch pages.
 async function helper(label, call, timeoutMs = 90000) {
-  await pluginStatus();
-  const r = await job('return await ' + call + ';', { prelude: buildPrelude(), label, timeoutMs });
+  const s = await pluginStatus();
+  const r = await job('return await ' + call + ';', { file: s.file.fileKey, prelude: buildPrelude(), label, timeoutMs });
   if (!r.ok) throw new Error(r.error);
   return String(r.result);
 }
@@ -138,8 +148,9 @@ const commentFiles = new Map(); // comment id → file key, from the events this
 const handlers = {
   async figma_status(a) {
     await ensureServer();
-    let s = await api('/status');
+    const s = await api('/status');
     if (a.file != null && a.file !== '') {
+      if (tied) throw new Error('this session is tied to file ' + tied + ' (FIGMA_FILE)');
       // The key of an open file, or a part of the name of exactly one.
       const want = String(a.file), files = openFiles(s);
       const hits = files.some(f => f.fileKey === want) ? files.filter(f => f.fileKey === want) : files.filter(f => (f.fileName || '').toLowerCase().includes(want.toLowerCase()));
@@ -149,12 +160,12 @@ const handlers = {
     const f = sessionFile(s), up = f.open, lines = [];
     lines.push('plugin: ' + (up ? 'connected' : 'not connected (open Claude Bridge in ' + (pinned ? 'file ' + pinned : 'Figma') + ')'));
     if (f.fileKey || f.fileName) lines.push('file: ' + JSON.stringify(f.fileName || '') + ' ' + (f.fileKey || '(no key)'));
-    const others = openFiles(s).filter(o => o.fileKey !== f.fileKey);
+    const others = tied ? [] : openFiles(s).filter(o => o.fileKey !== f.fileKey);
     if (others.length) lines.push('other open files: ' + others.map(o => JSON.stringify(o.fileName || '') + ' ' + o.fileKey).join('; ') + ' (figma_status {file} switches)');
     if (up) {
       const r = await job('const page = figma.currentPage, sel = page.selection, clip = s => (s.length > 60 ? s.slice(0, 59) + "…" : s);\n'
         + 'return [page.name, page.id, sel.length, sel.slice(0, 10).map(n => n.id + " " + n.type + " " + JSON.stringify(clip(n.name)))];',
-        { label: 'figma_status', timeoutMs: 15000 });
+        { file: f.fileKey, label: 'figma_status', timeoutMs: 15000 });
       if (r.ok) {
         const [page, id, count, sel] = r.result;
         lines.push('page: ' + JSON.stringify(page) + ' ' + id, 'selection: ' + (count ? sel.join('; ') + (count > 10 ? '; … ' + (count - 10) + ' more' : '') : 'none'));
@@ -190,16 +201,17 @@ const handlers = {
     const prelude = noPrelude ? '' : buildPrelude({ project });
     const label = (code.match(/^\/\/#\s*(.+)$/m) || [])[1] || (a.file ? basename(a.file).replace(/\.js$/, '') : 'figma_run');
     // A dry run never touches the plan; a failed step stays active, so the plan tells what really happened.
-    const mark = state => (a.step && !dryRun ? api('/plan', Object.assign({ mark: String(a.step), state }, pinned ? { file: pinned } : {})).catch(() => null) : null);
+    const file = s.file.fileKey || undefined;
+    const mark = state => (a.step && !dryRun ? api('/plan', { mark: String(a.step), state, file }).catch(() => null) : null);
     await mark('active');
     const timeoutMs = clamp(a.timeoutMs, 1000, 3600000, 120000);
-    const r = await job(code, { prelude, dryRun, timeoutMs, label });
+    const r = await job(code, { file, prelude, dryRun, timeoutMs, label });
     await mark(r.ok ? 'done' : 'active');
     return { content: [{ type: 'text', text: runOutput(r, project && !noPrelude ? project.name : null) }], isError: !r.ok };
   },
 
   async figma_screenshot(a) {
-    await pluginStatus();
+    const s = await pluginStatus();
     const scale = clamp(a.scale, 0.01, 4, 1), maxSize = clamp(a.maxSize, 16, 4096, 1024);
     const code = `const found = await _targets(${JSON.stringify(a.target || 'selection')});
 const nodes = found.nodes.filter(n => typeof n.exportAsync === 'function' && typeof n.width === 'number').slice(0, 4);
@@ -212,7 +224,7 @@ for (const n of nodes) {
 }
 if (found.nodes.length > 4) out.push('… ' + (found.nodes.length - 4) + ' more (4 per call)');
 return out;`;
-    const r = await job(code, { prelude: buildPrelude(), label: 'figma_screenshot', timeoutMs: 60000 });
+    const r = await job(code, { file: s.file.fileKey, prelude: buildPrelude(), label: 'figma_screenshot', timeoutMs: 60000 });
     if (!r.ok) throw new Error(r.error);
     const lines = r.result.map((line, i) => line + (r.images[i] ? ' ' + r.images[i] : ''));
     return { content: [{ type: 'text', text: lines.join('\n') }].concat(r.images.map(file => ({ type: 'image', data: readFileSync(file).toString('base64'), mimeType: 'image/png' }))) };
@@ -356,7 +368,9 @@ process.stdin.on('end', () => { if (buffer.trim()) onLine(buffer.trim()); buffer
 let linkProblem = null;
 (async () => {
   try {
-    const repo = findRepoProject(process.cwd());
+    // Not in the session of a comment: its folder is writable to it, and a .figma-bridge.json written there by
+    // one session would be linked by the next.
+    const repo = process.env.BRIDGE_FILE_ROOT ? null : findRepoProject(process.cwd());
     if (repo) { const { linkProject } = await import('./link.mjs'); const r = await linkProject(repo); log('linked project', r.name, '→', r.dir); }
   } catch (e) { linkProblem = e.message; log('.figma-bridge.json not linked:', e.message); }
   if (!process.env.BRIDGE_NO_AUTOSTART) ensureServer().catch(e => log(e.message));

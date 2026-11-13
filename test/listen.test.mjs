@@ -49,12 +49,12 @@ function figmaRest() {
 
 // The plugin window: says hello, keeps a /next long poll open and answers jobs with `answer(job)`. With `win` it is
 // a window of its own, as the plugin's windows are; without, a window from before window ids.
-function plugin(base, token, answer = () => 'OUTLINE', { win = null, file = 'FILE', name = 'Mockups' } = {}) {
+function plugin(base, token, answer = () => 'OUTLINE', { win = null, file = 'FILE', name = 'Mockups', openedAt = null } = {}) {
   const H = { 'X-Bridge-Token': token, 'Content-Type': 'application/json' };
   const controller = new AbortController();
   const jobs = [];
   let polls = 0;
-  const hello = (fileKey, fileName = name) => fetch(base + '/hello', { method: 'POST', headers: H, body: JSON.stringify({ fileKey, fileName, ...(win ? { win } : {}) }) });
+  const hello = (fileKey, fileName = name) => fetch(base + '/hello', { method: 'POST', headers: H, body: JSON.stringify({ fileKey, fileName, ...(win ? { win } : {}), ...(openedAt ? { openedAt } : {}) }) });
   const loop = (async () => {
     await hello(file);
     while (!controller.signal.aborted) {
@@ -64,7 +64,8 @@ function plugin(base, token, answer = () => 'OUTLINE', { win = null, file = 'FIL
       if (r.status !== 200) continue;
       const job = await r.json();
       jobs.push(job);
-      await fetch(base + '/result', { method: 'POST', headers: H, body: JSON.stringify({ id: job.id, ok: true, result: await answer(job), images: [] }) });
+      // Like the real window: the next poll goes out at once, the result follows when the job is done.
+      (async () => fetch(base + '/result', { method: 'POST', headers: H, body: JSON.stringify({ id: job.id, ok: true, result: await answer(job), images: [] }) }))().catch(() => {});
     }
   })();
   const stop = async () => { controller.abort(); await loop; };
@@ -692,4 +693,86 @@ test('GET /window gives a plugin window its plan and the listen state in one ans
   const w = await api('/window?file=FILE');
   assert.equal(w.status, 200);
   assert.deepEqual(w.body, { tasks: [{ text: 'Shown here', state: 'active', fileKey: 'FILE' }], listen: { on: true, listening: true, note: 'Słucham nowych komentarzy' } });
+});
+
+// ---- found by review
+
+test('a job waiting for the current window goes to the next one as soon as that window turns out closed', async () => {
+  home();
+  const { s, base, api } = await start({ agent: recordingAgent() });
+  const { b } = await twoWindows(s, base);
+  await b.stop(); // the current window; for a moment it still counts as open
+  await sleep(50); // the server has seen the connection drop: the job below is queued, not sent into it
+  const t0 = Date.now();
+  const r = await api('/job', { code: 'return 1', timeoutMs: 6000 });
+  assert.deepEqual([r.status, r.body.result], [200, 'A']);
+  assert.ok(Date.now() - t0 < 3000, 'handed over after ' + (Date.now() - t0) + ' ms, not at the other window\'s next poll');
+});
+
+test('the current file is the window opened last, whichever window says hello again last', async () => {
+  home();
+  const { s, base, api } = await start({ agent: recordingAgent() });
+  const a = plugin(base, s.token, () => 'A', { win: 'wa', file: 'FILE', openedAt: 1000 });
+  await sleep(50);
+  plugin(base, s.token, () => 'B', { win: 'wb', file: 'SECOND', name: 'Second file', openedAt: 2000 });
+  await sleep(100);
+  await a.hello('FILE'); // after a lost connection every window says hello again, in any order
+  assert.equal((await api('/status')).body.file.fileKey, 'SECOND');
+  assert.equal((await api('/job', { code: 'return 1' })).body.result, 'B');
+});
+
+test('a part of a file name picks among the files with an open window, not among closed ones', async () => {
+  home();
+  const { s, base, api } = await start({ agent: recordingAgent() });
+  const old = plugin(base, s.token, () => 'v1', { win: 'w1', file: 'FILE', name: 'Design v1' });
+  await sleep(50);
+  plugin(base, s.token, () => 'v2', { win: 'w2', file: 'SECOND', name: 'Design v2' });
+  await sleep(100);
+  assert.equal((await api('/job', { code: 'return 1', file: 'design' })).status, 400, 'two open files match');
+  await old.stop();
+  await sleep(400);
+  const r = await api('/job', { code: 'return 1', file: 'design' });
+  assert.deepEqual([r.status, r.body.result], [200, 'v2']);
+});
+
+test('a result the server cannot save still answers the job, with the reason', async () => {
+  home();
+  const { s, base, api } = await start({ agent: recordingAgent() });
+  const H = { 'X-Bridge-Token': s.token, 'Content-Type': 'application/json' }, stop = new AbortController();
+  cleanups.push(() => stop.abort());
+  (async () => {
+    await fetch(base + '/hello', { method: 'POST', headers: H, body: JSON.stringify({ win: 'w', fileKey: 'FILE' }) });
+    const job = await (await fetch(base + '/next?win=w&file=FILE', { headers: H, signal: stop.signal })).json();
+    await fetch(base + '/result', { method: 'POST', headers: H, body: JSON.stringify({ id: job.id, ok: true, result: 1, images: [null] }) });
+  })().catch(() => {});
+  const r = await api('/job', { code: 'return 1', timeoutMs: 1500 });
+  assert.equal(r.status, 200, 'answered, not left to time out: ' + JSON.stringify(r.body));
+  assert.equal(r.body.ok, false);
+  assert.match(r.body.error, /^the result could not be saved: /);
+});
+
+test('a window that took a job and then closed: the job is answered within seconds, not at its timeout', async () => {
+  home();
+  const { s, base, api } = await start({ agent: recordingAgent() });
+  const H = { 'X-Bridge-Token': s.token, 'Content-Type': 'application/json' };
+  // The window takes the job and is never heard from again (closed, crashed, Figma quit).
+  await fetch(base + '/hello', { method: 'POST', headers: H, body: JSON.stringify({ win: 'w', fileKey: 'FILE' }) });
+  const took = fetch(base + '/next?win=w&file=FILE', { headers: H }).then(r => r.json());
+  await sleep(50);
+  const t0 = Date.now();
+  const r = await api('/job', { code: 'return 1', timeoutMs: 20000 });
+  assert.equal((await took).code, 'return 1');
+  assert.ok(Date.now() - t0 < 5000, 'answered after ' + (Date.now() - t0) + ' ms');
+  assert.deepEqual(r.body, { ok: false, error: 'okno wtyczki zamknęło się, zanim odesłało wynik (zadanie mogło wykonać się częściowo)' });
+  // A window that is busy but there (it asked for the next job) is not mistaken for a closed one.
+  const stop = new AbortController();
+  cleanups.push(() => stop.abort());
+  const again = fetch(base + '/next?win=w&file=FILE', { headers: H }).then(r => r.json());
+  await sleep(50);
+  const slow = api('/job', { code: 'return 2', timeoutMs: 20000 });
+  const job = await again;
+  fetch(base + '/next?win=w&file=FILE', { headers: H, signal: stop.signal }).catch(() => {}); // still polling while it works
+  await sleep(1200);
+  await fetch(base + '/result', { method: 'POST', headers: H, body: JSON.stringify({ id: job.id, ok: true, result: 'done late' }) });
+  assert.equal((await slow).body.result, 'done late');
 });

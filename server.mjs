@@ -37,7 +37,7 @@ const excerpt = text => String(text).replace(/\s+/g, ' ').slice(0, 70);
 const stamped = (...a) => console.log(new Date().toISOString(), ...a);
 
 // options are for tests: port 0 picks a free one, figmaFetch replaces the REST client, agent the comment agent.
-export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs = 40000, goneMs = 5000, activeMs = 30 * 60e3, clockSlackMs = 10e3,
+export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs = 40000, goneMs = 10000, sweepMs = 1000, activeMs = 30 * 60e3, clockSlackMs = 10e3,
   headersAfterMs = 240e3, beatMs = 60e3, backoffMs = 60e3, log = stamped, figmaApi = process.env.BRIDGE_FIGMA_API || 'https://api.figma.com', figmaFetch = (...a) => fetch(...a), agent: agentOverride = null, agentOptions = {} } = {}) {
   const data = dataDir(), file = name => join(data, name);
   mkdirSync(file('out'), { recursive: true });
@@ -62,16 +62,20 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
   // Plugin windows: one per file the plugin is open in (the same file in two tabs gives two). A window long-polls
   // /next under its own id (?win=) and names its file (?file=, /hello), so each waits on its own and a job can be
   // sent to the window of one file. A window from before window ids polls without parameters: its id is ''.
-  const windows = new Map(); // id → { id, fileKey, fileName, seen, since, gone, poller }
+  const windows = new Map(); // id → { id, fileKey, fileName, openedAt, seen, since, idle, poller }
   let currentId = '';
-  const windowOf = id => { let w = windows.get(id); if (!w) windows.set(id, w = { id, fileKey: null, fileName: null, seen: 0, since: 0, gone: 0, poller: null }); return w; };
-  // An answered window polls again at once. One whose long poll broke off and that has not come back was closed:
-  // waiting out connectedMs for it would let a job queue for a window that is gone.
-  const live = w => !!w.poller || (Date.now() - w.seen < connectedMs && !(w.gone && Date.now() - w.gone >= Math.min(connectedMs, goneMs)));
+  const windowOf = id => { let w = windows.get(id); if (!w) windows.set(id, w = { id, fileKey: null, fileName: null, openedAt: 0, seen: 0, since: 0, idle: 0, poller: null }); return w; };
+  // An open window always has a poll waiting: answered (a job, or 204 after 25 s) it asks again at once, also
+  // while a job runs, and after an error within seconds. One without a poll for longer (idle: since when) was
+  // closed. Counting it as open would queue jobs for a window that is gone.
+  const grace = Math.min(connectedMs, goneMs);
+  const live = w => !!w.poller || (w.idle > 0 && Date.now() - w.idle < grace);
+  const release = w => { clearTimeout(w.poller.timer); w.poller = null; w.idle = Date.now(); };
   const liveWindows = () => [...windows.values()].filter(live);
-  // A job that names no file goes to the window that said hello last, and once that is gone to the one heard
-  // from most recently.
-  const current = () => { const c = windows.get(currentId); return c && live(c) ? c : liveWindows().sort((a, b) => b.seen - a.seen)[0] || c || null; };
+  // A job that names no file goes to the window opened last (after a lost connection every window says hello
+  // again, in any order: that must not change the answer), and once that is gone to the latest one still open.
+  const current = () => { const c = windows.get(currentId); return c && live(c) ? c : liveWindows().sort((a, b) => b.openedAt - a.openedAt || b.seen - a.seen)[0] || c || null; };
+  const prune = () => { for (const [id, w] of windows) if (id !== currentId && !live(w) && Date.now() - w.seen >= activeMs) windows.delete(id); };
   const pluginFile = () => { const c = current(); return { fileKey: c ? c.fileKey : null, fileName: c ? c.fileName : null }; };
   const fileLive = key => !!key && liveWindows().some(w => w.fileKey === key);
   const fileName = key => { const w = [...windows.values()].find(x => x.fileKey === key && x.fileName); return w ? w.fileName : null; };
@@ -200,7 +204,6 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
   // Idle until the plugin connects: nobody would act on the comments, and the REST API has a rate limit.
   async function pollOnce() {
     if (!connected() || !tokenFiles().length) return;
-    for (const [id, w] of windows) if (id !== currentId && !live(w) && Date.now() - w.seen >= activeMs) windows.delete(id);
     // The files of every local project and every file a plugin window was open in lately (opening the plugin in
     // another file does not end the comments of the first); a broken project.json is shown, not fatal.
     let keys = [], projectsError = null;
@@ -267,7 +270,10 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
       } catch (e) { fail(Object.assign(new Error('bad request: ' + e.message), { status: 400 })); }
     });
   });
-  // A job that names a file waits for a window of that file; any other goes to the current window.
+  // A job that names a file waits for a window of that file; any other goes to the current window. What stays
+  // queued is looked at again shortly: the window it waits for may turn out closed while another sits in its
+  // long poll, and nothing else would bring the job up before that poll ends.
+  let again = null;
   const handOut = () => {
     for (let i = 0; i < queue.length; i++) {
       const { file: target, ...job } = queue[i]; // timeoutMs goes along: the window stops showing a job nobody waits for
@@ -275,19 +281,21 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
       if (!w || !w.poller) continue;
       queue.splice(i--, 1);
       const waits = waiting.get(job.id);
-      if (waits) waits.ranIn = w.fileKey;
-      const { res, timer } = w.poller;
-      w.poller = null; clearTimeout(timer);
+      if (waits) { waits.ranIn = w.fileKey; waits.win = w.id; }
+      const { res } = w.poller;
+      release(w);
       send(res, 200, job);
     }
+    if (queue.length && !again) again = setTimeout(() => { again = null; handOut(); }, 500);
   };
   // `file` of a request: the key of a file the bridge knows, or a part of the name of a file a window is open in.
   const resolveFile = q => {
-    const open = [...windows.values()].filter(w => w.fileKey);
-    let known = open.some(w => w.fileKey === q) || plan.some(t => t.fileKey === q);
+    let known = [...windows.values()].some(w => w.fileKey === q) || plan.some(t => t.fileKey === q);
     if (!known) try { known = listProjects().some(p => (p.config.files || []).includes(q)); } catch (e) {}
     if (known) return { key: q };
-    const hits = [...new Set(open.filter(w => (w.fileName || '').toLowerCase().includes(q.toLowerCase())).map(w => w.fileKey))];
+    // By name only among the files with a window open now: a closed one would make the name ambiguous, or take
+    // a job nobody will run.
+    const hits = [...new Set(liveWindows().filter(w => w.fileKey && (w.fileName || '').toLowerCase().includes(q.toLowerCase())).map(w => w.fileKey))];
     if (hits.length === 1) return { key: hits[0] };
     if (hits.length) return { error: 'several open files match ' + JSON.stringify(q) + ': ' + hits.map(k => JSON.stringify(fileName(k)) + ' ' + k).join(', ') };
     if (/^[A-Za-z0-9]{16,}$/.test(q)) return { key: q }; // a file the plugin has not been opened in yet
@@ -317,6 +325,14 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
     queue.push({ id, code: String(code || ''), label: String(label || '').slice(0, 60), dryRun: !!dryRun, prelude: typeof prelude === 'string' ? prelude : '', timeoutMs: limit, file: target || null });
     handOut();
     return id;
+  };
+  // A job a window took is lost when that window closes: its caller hears so now, not at the job's timeout.
+  const sweep = () => {
+    for (const [id, w] of waiting) {
+      if (w.win == null || (windows.has(w.win) && live(windows.get(w.win)))) continue;
+      waiting.delete(id); clearTimeout(w.timer);
+      w.done({ ok: false, error: 'okno wtyczki zamknęło się, zanim odesłało wynik (zadanie mogło wykonać się częściowo)' }, w.ranIn);
+    }
   };
   // Whoever asked for the job is gone (a cancelled tool call, Ctrl-C on run.mjs): while still queued it is dropped.
   // One the plugin already runs cannot be stopped.
@@ -358,12 +374,12 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
         if (named && named !== w.fileKey) { w.fileKey = named; w.fileName = null; w.since = Date.now(); }
         // (Re)connected: what came meanwhile shows up now, and listening to the file starts over.
         if (back) { w.since = Date.now(); schedulePoll(); }
-        w.seen = Date.now(); w.gone = 0;
+        w.seen = Date.now();
         sawFile(w.fileKey);
         // The same window asking again: its earlier request is dead. Other windows keep theirs.
-        if (w.poller) { clearTimeout(w.poller.timer); send(w.poller.res, 204); }
-        w.poller = { res, timer: setTimeout(() => { if (w.poller && w.poller.res === res) { w.poller = null; send(res, 204); } }, 25000) };
-        req.on('close', () => { if (w.poller && w.poller.res === res) { clearTimeout(w.poller.timer); w.poller = null; w.gone = Date.now(); } });
+        if (w.poller) { const old = w.poller.res; release(w); send(old, 204); }
+        w.poller = { res, timer: setTimeout(() => { if (w.poller && w.poller.res === res) { release(w); send(res, 204); } }, 25000) };
+        req.on('close', () => { if (w.poller && w.poller.res === res) release(w); });
         handOut();
         // A window that is back without naming its file may have been reopened elsewhere: the agent waits for its
         // /hello, which says where.
@@ -373,15 +389,21 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
         const m = await readBody(req), w = waiting.get(m.id);
         if (w) {
           waiting.delete(m.id); clearTimeout(w.timer);
-          const images = (m.images || []).map(i => { const p = join(data, 'out', i.name.replace(/[^\w.-]/g, '_') + '.png'); writeFileSync(p, Buffer.from(i.b64, 'base64')); return p; });
-          // Dry run: the full report goes to a file, the reply carries the counts and the first 20 entries.
-          let dryRun = null, dryRunReport = null;
-          if (m.dryRun && typeof m.dryRun === 'object') {
-            dryRunReport = join(data, 'out', 'dry-run-' + String(m.id).replace(/[^\w.-]/g, '_') + '.json');
-            writeFileSync(dryRunReport, JSON.stringify(m.dryRun, null, 1));
-            dryRun = { ...m.dryRun, entries: (m.dryRun.entries || []).slice(0, 20) };
-          }
-          w.done({ ok: m.ok, result: m.result, error: m.error, images, dryRun, dryRunReport }, w.ranIn);
+          // Whatever goes wrong here (an image without a name, a full disk), the job is answered: its caller
+          // would otherwise wait for ever, the timeout being cleared already.
+          let out;
+          try {
+            const images = (m.images || []).map(i => { const p = join(data, 'out', String(i.name).replace(/[^\w.-]/g, '_') + '.png'); writeFileSync(p, Buffer.from(i.b64, 'base64')); return p; });
+            // Dry run: the full report goes to a file, the reply carries the counts and the first 20 entries.
+            let dryRun = null, dryRunReport = null;
+            if (m.dryRun && typeof m.dryRun === 'object') {
+              dryRunReport = join(data, 'out', 'dry-run-' + String(m.id).replace(/[^\w.-]/g, '_') + '.json');
+              writeFileSync(dryRunReport, JSON.stringify(m.dryRun, null, 1));
+              dryRun = { ...m.dryRun, entries: (m.dryRun.entries || []).slice(0, 20) };
+            }
+            out = { ok: m.ok, result: m.result, error: m.error, images, dryRun, dryRunReport };
+          } catch (e) { out = { ok: false, error: 'the result could not be saved: ' + (e && e.message ? e.message : e) }; }
+          w.done(out, w.ranIn);
         }
         return send(res, 200, { ok: true });
       }
@@ -407,7 +429,10 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
         const m = await readBody(req), w = windowOf(String(m.win || '')), key = m.fileKey || null;
         if (key !== w.fileKey) w.since = Date.now(); // listening to a file starts once a window is in it
         w.fileKey = key; w.fileName = m.fileName || null;
-        currentId = w.id;
+        // openedAt: when the window was opened, by its own clock; a window from before it counts as opened now.
+        w.openedAt = Number(m.openedAt) || w.openedAt || Date.now();
+        const c = windows.get(currentId);
+        if (!c || c === w || !live(c) || w.openedAt >= c.openedAt) currentId = w.id;
         sawFile(key);
         schedulePoll(); // a newly opened file gets its baseline now
         agent.pump();
@@ -472,6 +497,8 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
     setInterval(() => { if (plan.some(expiring)) savePlan(); }, 2000),
     setInterval(() => { if (!inFlight) pollComments(); }, pollMs),
     setInterval(() => { if (pruneEvents()) saveEvents(); }, 3600e3),
+    setInterval(prune, 60e3),
+    setInterval(sweep, sweepMs),
   ];
   return new Promise((ok, fail) => {
     server.once('error', fail);
@@ -482,7 +509,7 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
       ok({
         port: actual, token: TOKEN, agent, pollComments,
         close: () => new Promise(done => {
-          timers.forEach(clearInterval); clearTimeout(pollSoon);
+          timers.forEach(clearInterval); clearTimeout(pollSoon); clearTimeout(again);
           for (const t of [...[...windows.values()].map(w => w.poller), ...eventWaiters, ...waiting.values()]) if (t) clearTimeout(t.timer);
           server.closeAllConnections(); server.close(() => done());
         }),

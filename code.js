@@ -32,8 +32,16 @@ const compile = (prelude, code) => {
 // progress bar too, because messages reach the window only once the loop ends. `await breathe()` hands control
 // back for a moment, at most every 50 ms, so Figma can redraw and take clicks.
 let lastBreath = 0, lastProgress = 0;
-// Jobs overlap at their awaits: the window hands over the next one while the first still runs.
-let runningJobs = 0, startedJobs = 0;
+// Jobs overlap at their awaits: the window hands over the next one while the first still runs. A job counts as
+// running until it returns or its time limit is over (the server has given up on it by then, and one that never
+// returns must not count for ever).
+const running = {}; // job id → when its time is over
+let startedJobs = 0;
+const runningNow = () => {
+  let n = 0;
+  for (const id of Object.keys(running)) { if (running[id] < Date.now()) delete running[id]; else n++; }
+  return n;
+};
 const breathe = async () => {
   if (Date.now() - lastBreath < 50) return;
   await new Promise(ok => setTimeout(ok, 0));
@@ -271,18 +279,19 @@ figma.ui.onmessage = async msg => {
   const startPage = figma.currentPage;
   const before = new Set(startPage.children.map(n => n.id));
   const mine = ++startedJobs;
-  let dry = null, outcome, alone = runningJobs === 0;
-  runningJobs++;
+  let dry = null, outcome, alone = runningNow() === 0;
+  running[msg.id] = Date.now() + (msg.timeoutMs > 0 ? msg.timeoutMs : 3600e3);
   try {
     if (msg.dryRun) dry = recorder(figma, startPage);
     lastBreath = Date.now(); lastProgress = 0;
-    figma.skipInvisibleInstanceChildren = false; // what the job before set does not carry over
+    // What the job before set does not carry over; under a job that still runs it is left alone.
+    if (alone) figma.skipInvisibleInstanceChildren = false;
     const result = await compile(msg.prelude || '', msg.code)(dry ? dry.figma : figma, shot, progress, breathe);
     outcome = { ok: true, result: result === undefined ? null : result };
   } catch (e) {
     outcome = { ok: false, error: String(e && e.message ? e.message : e) };
   }
-  runningJobs--;
+  delete running[msg.id];
   if (startedJobs !== mine) alone = false;
   if (dry) outcome.dryRun = await dry.finish(outcome.error);
   else {

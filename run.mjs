@@ -52,30 +52,34 @@ const request = async (path, init) => {
 };
 if (opts.status) { console.log(await (await request('/status')).text()); process.exit(0); }
 
-const readPrelude = async () => {
+// The job's file: --file, else the plugin's current file, which the server knows. The job, its plan step and its
+// project all go by this one answer: left to the server, the job could land in another file when the current
+// window closes in between.
+const status = await (await request('/status')).json().catch(() => ({}));
+const named = opts.file && (status.files || [status.file || {}]).find(f => f.fileKey === opts.file || (f.fileName || '').toLowerCase().includes(opts.file.toLowerCase()));
+const fileKey = opts.file ? (named ? named.fileKey : opts.file) : (status.file || {}).fileKey || null;
+const target = opts.file || fileKey || undefined;
+
+const readPrelude = () => {
   if (opts.noPrelude) return '';
   const extra = opts.preludes.map(p => resolve(p));
   const missing = extra.find(f => !existsSync(f));
   if (missing) fail('prelude file not found: ' + missing);
-  // Without --project the job's file picks the project: --file when it is a key, else the plugin's current file,
-  // which the server knows.
-  const status = opts.project ? {} : await (await request('/status')).json();
-  const named = opts.file && (status.files || [status.file || {}]).find(f => f.fileKey === opts.file || (f.fileName || '').toLowerCase().includes(opts.file.toLowerCase()));
-  const fileKey = opts.project ? null : opts.file ? (named ? named.fileKey : opts.file) : (status.file || {}).fileKey;
-  try { return buildPrelude({ project: selectProject({ name: opts.project, fileKey }), extra }); } catch (e) { return fail(e.message); }
+  // Without --project the job's file picks the project.
+  try { return buildPrelude({ project: selectProject({ name: opts.project, fileKey: opts.project ? null : fileKey }), extra }); } catch (e) { return fail(e.message); }
 };
 const mark = async state => {
   if (!opts.step || opts.dryRun) return;
-  try { await fetch(baseUrl() + '/plan', { method: 'POST', headers: H, body: JSON.stringify({ mark: opts.step, state, file: opts.file || undefined }) }); } catch (e) {}
+  try { await fetch(baseUrl() + '/plan', { method: 'POST', headers: H, body: JSON.stringify({ mark: opts.step, state, file: target }) }); } catch (e) {}
 };
 
 if (!existsSync(opts.script)) fail('no such script: ' + opts.script);
 const code = readFileSync(opts.script, 'utf8');
-const prelude = await readPrelude();
+const prelude = readPrelude();
 // Label for the plugin window: a "//# description" line in the script, else the file name.
 const label = (code.match(/^\/\/#\s*(.+)$/m) || [])[1] || basename(opts.script).replace(/\.js$/, '');
 await mark('active');
-const r = await request('/job', { method: 'POST', body: JSON.stringify({ code, label, timeoutMs: opts.timeoutMs, dryRun: opts.dryRun, prelude, file: opts.file || undefined }) });
+const r = await request('/job', { method: 'POST', body: JSON.stringify({ code, label, timeoutMs: opts.timeoutMs, dryRun: opts.dryRun, prelude, file: target }) });
 const out = await r.json();
 console.log(JSON.stringify(out, null, 1));
 // A failed step stays active: the plan has to tell the truth, not comfort.
