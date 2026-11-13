@@ -1,4 +1,5 @@
 # runtime state of a development checkout (BRIDGE_HOME = the repo): data/, linked projects and the generated ui.html
+ui.html.*.tmp
 data/
 projects/
 ui.html

@@ -5,7 +5,7 @@
 // Start: node server.mjs (install.mjs installs a LaunchAgent that keeps it running).
 import http from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { appDir, codeDir, dataDir, port as defaultPort } from './paths.mjs';
@@ -20,10 +20,14 @@ export function ensureToken(dir = dataDir()) {
 // ui.html carries the token, so it is private like token.txt. It sits next to manifest.json, which names it, and
 // comes from the template of that copy: a server run from the repo must not pair its window with the installed code.js.
 export function writeUi(token, port, dir = appDir(), templateDir = existsSync(join(dir, 'ui.template.html')) ? dir : codeDir) {
-  const file = join(dir, 'ui.html');
+  const file = join(dir, 'ui.html'), fresh = file + '.' + process.pid + '.tmp';
   mkdirSync(dir, { recursive: true });
-  writeFileSync(file, readFileSync(join(templateDir, 'ui.template.html'), 'utf8').replace('__TOKEN__', token).replace('__PORT__', String(port)));
-  chmodSync(file, 0o600);
+  const html = readFileSync(join(templateDir, 'ui.template.html'), 'utf8').replace('__TOKEN__', token).replace('__PORT__', String(port));
+  // Private from its first byte and put in place by a rename. Written into ui.html itself, the token would be
+  // readable by others until the chmod, and would go into whatever a link left under that name points at.
+  rmSync(fresh, { force: true });
+  writeFileSync(fresh, html, { mode: 0o600, flag: 'wx' });
+  try { renameSync(fresh, file); } catch (e) { rmSync(fresh, { force: true }); throw e; }
 }
 
 // State files are read on start. One that is missing, cut off by a crash or of the wrong shape gives the

@@ -3,7 +3,7 @@
 // Figma file) is not under test here; what must hold around it is.
 import { test, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,10 +15,12 @@ afterEach(async () => { for (const f of cleanups.splice(0).reverse()) await f();
 const sleep = ms => new Promise(ok => setTimeout(ok, ms));
 const agent = { enqueue: () => true, pump() {}, clear() {}, cancel() {}, state: () => ({ running: null, queued: 0 }) };
 
-async function start(options = {}) {
+// prepare(home) runs before the server starts.
+async function start({ prepare = () => {}, ...options } = {}) {
   const h = mkdtempSync(join(tmpdir(), 'bridge-sec-'));
   homes.push(h);
   mkdirSync(join(h, 'data'), { recursive: true });
+  prepare(h);
   process.env.BRIDGE_HOME = h;
   const s = await startServer({ port: 0, pollMs: 1e6, agent, ...options });
   cleanups.push(s.close);
@@ -92,6 +94,22 @@ test('A02/A05: the token files, the plugin window and the data directory are rea
   assert.deepEqual([mode('data/token.txt'), mode('app/ui.html')], ['600', '600']);
   // Comment texts, screenshots, results and logs live here.
   assert.equal(mode('data'), '700');
+});
+
+test('A05: the plugin window, which carries the token, is not written through a link left under its name', async () => {
+  let victim;
+  const { h, s } = await start({ prepare: home => {
+    victim = join(home, 'someone-elses-file.txt');
+    writeFileSync(victim, 'keep me');
+    mkdirSync(join(home, 'app'));
+    symlinkSync(victim, join(home, 'app', 'ui.html'));
+  } });
+  const ui = join(h, 'app', 'ui.html');
+  assert.equal(readFileSync(victim, 'utf8'), 'keep me', 'the file the link pointed at was overwritten with the window and its token');
+  assert.equal(lstatSync(ui).isSymbolicLink(), false);
+  assert.ok(readFileSync(ui, 'utf8').includes("TOKEN = '" + s.token + "'"));
+  assert.equal((statSync(ui).mode & 0o777).toString(8), '600');
+  assert.deepEqual(readdirSync(join(h, 'app')).filter(f => f !== 'ui.html'), [], 'nothing temporary left next to it');
 });
 
 // ---- A09 Security logging and monitoring failures
