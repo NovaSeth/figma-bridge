@@ -74,6 +74,14 @@ test('--status answers through the server', async () => {
   assert.equal(r.json.file.fileKey, 'TESTFILE');
 });
 
+test('a long answer arrives whole when stdout is a pipe', async () => {
+  // A pipe takes about 64 KB at once. The rest of a longer answer is still queued when the write call returns.
+  const r = await runCli(job('long.js', 'return "x".repeat(400000);'));
+  assert.equal(r.code, 0, r.err);
+  assert.ok(r.json, 'stdout is not complete JSON: ' + r.out.length + ' chars, ending ' + JSON.stringify(r.out.slice(-12)));
+  assert.equal(r.json.result.length, 400000);
+});
+
 test('a normal job gets prelude.js and the prelude of the project owning the plugin file, and applies its writes', async () => {
   const r = await runCli(job('normal.js', `//# e2e normal
     const card = one('Card');

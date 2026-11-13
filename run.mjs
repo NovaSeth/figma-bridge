@@ -81,7 +81,8 @@ const label = (code.match(/^\/\/#\s*(.+)$/m) || [])[1] || basename(opts.script).
 await mark('active');
 const r = await request('/job', { method: 'POST', body: JSON.stringify({ code, label, timeoutMs: opts.timeoutMs, dryRun: opts.dryRun, prelude, file: target }) });
 const out = await r.json();
-console.log(JSON.stringify(out, null, 1));
+// A pipe takes about 64 KB at once and queues the rest: exiting before the write is through cuts a long answer off.
+await new Promise(written => process.stdout.write(JSON.stringify(out, null, 1) + '\n', written));
 // A failed step stays active: the plan has to tell the truth, not comfort.
 await mark(out.ok ? 'done' : 'active');
 process.exit(out.ok ? 0 : 1);
