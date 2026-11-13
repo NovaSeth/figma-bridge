@@ -5,7 +5,7 @@
 // own or update the one it linked before. It cannot replace a project that came from elsewhere (--force can),
 // claim a Figma file another project lists, or pull in files from outside itself.
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { projectsDir } from './paths.mjs';
 import { findRepoProject, listProjects } from './project.mjs';
@@ -26,17 +26,23 @@ export function linkProject({ name, root, config }, { force = false } = {}) {
     // Nor by way of a link: its target would be copied, or read later as the agent's prompt.
     if (!realpathSync(join(root, p)).startsWith(repo + sep)) throw new Error('.figma-bridge.json: ' + p + ' points outside ' + root);
   }
-  const dir = join(projectsDir(), name);
+  const dir = join(projectsDir(), name), replace = ' (to replace it: node link.mjs --force ' + root + ')';
+  // The checks below need every other project read. One that cannot be read stops the link: skipping it would
+  // skip the checks for it.
+  let others;
+  try { others = listProjects().filter(p => p.root !== dir); }
+  catch (e) { throw new Error('cannot check the other projects: ' + e.message); }
   if (existsSync(join(dir, 'project.json')) && !force) {
     let from = null;
     try { from = JSON.parse(readFileSync(join(dir, MARKER), 'utf8')).source; } catch (e) {}
-    const replace = ' (to replace it: node link.mjs --force ' + root + ')';
     if (!from) throw new Error('project ' + JSON.stringify(name) + ' in ' + dir + ' was not linked from a repo' + replace);
     if (from !== repo) throw new Error('project ' + JSON.stringify(name) + ' in ' + dir + ' was linked from ' + from + ', not from ' + repo + replace);
   }
+  // A project is found by its folder, then by the name in its project.json, and a file system may fold case: a
+  // new folder must not answer to a name an existing project goes by.
+  const same = force ? null : others.find(p => [p.name, basename(p.root)].some(n => n.toLowerCase() === name.toLowerCase()));
+  if (same) throw new Error('project ' + JSON.stringify(name) + ' already exists in ' + same.root + replace);
   // The project that lists a file gets its preludes into every job there and its prompt into every comment.
-  let others = [];
-  try { others = listProjects().filter(p => p.root !== dir); } catch (e) {}
   for (const key of config.files || []) {
     const owner = others.find(p => (p.config.files || []).includes(key));
     if (owner) throw new Error('.figma-bridge.json: file ' + key + ' belongs to project ' + JSON.stringify(owner.name) + ' (' + owner.root + ')');

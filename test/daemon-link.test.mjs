@@ -106,6 +106,28 @@ test('A08: a link that points out of the repo is refused; links inside a copied 
   assert.ok(!existsSync(join(home, 'projects', 'nested', 'jobs', 'leak.js')));
 });
 
+test('A08: a repo cannot shadow a project by the name inside its project.json, nor by the same name in another case', () => {
+  // Projects are found by folder name first, then by the name in project.json: a new folder called like an
+  // existing project's name would win over it.
+  write(join(home, 'projects', 'folder-name', 'project.json'), JSON.stringify({ name: 'shown-name', preludes: [] }));
+  const shadow = otherRepo('shadow', { name: 'shown-name' });
+  assert.throws(() => linkProject(findRepoProject(shadow)), /project "shown-name" already exists in .*folder-name/);
+  assert.ok(!existsSync(join(home, 'projects', 'shown-name')));
+  assert.equal(projectByName('shown-name').root, join(home, 'projects', 'folder-name'));
+  const cased = otherRepo('cased', { name: 'DEMO' });
+  assert.throws(() => linkProject(findRepoProject(cased)), /project "DEMO" (already exists in|in) .*demo/i);
+  assert.equal(linkProject(findRepoProject(shadow), { force: true }).name, 'shown-name');
+});
+
+test('A08: a project.json that cannot be read stops linking; the checks are not skipped for it', () => {
+  write(join(home, 'projects', 'broken', 'project.json'), '{ "name": "broken", ');
+  const fresh = otherRepo('fresh', { name: 'fresh-project', files: ['KEY1'] });
+  try {
+    assert.throws(() => linkProject(findRepoProject(fresh)), /cannot check the other projects: .*broken.*invalid JSON/);
+    assert.ok(!existsSync(join(home, 'projects', 'fresh-project')));
+  } finally { rmSync(join(home, 'projects', 'broken'), { recursive: true, force: true }); }
+});
+
 test('CLI: node link.mjs [dir]', async () => {
   const run = cwdArg => new Promise(ok => execFile(process.execPath, [join(root, 'link.mjs'), cwdArg], { env: { ...process.env, BRIDGE_HOME: home } },
     (err, stdout, stderr) => ok({ code: err ? err.code : 0, stdout, stderr })));
