@@ -5,10 +5,12 @@
 // BRIDGE_NO_AUTOSTART=1: never start the bridge server, only talk to a running one.
 // FIGMA_FILE=<file key>: every tool works in the plugin window of that file (agent.mjs sets it for a comment's
 // session); figma_status {file} sets the same for the rest of a session.
+// BRIDGE_FILE_ROOT=<folder>: figma_run {file} takes job files from that folder only (agent.mjs sets it too: a
+// comment is untrusted text, and the session's own file tools are fenced to the same folder).
 import { execFile, spawn } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, isAbsolute, join, resolve } from 'node:path';
+import { basename, isAbsolute, join, resolve, sep } from 'node:path';
 import { baseUrl, bridgeHome, codeDir, dataDir, readToken } from './paths.mjs';
 import { buildPrelude, findRepoProject, projectFiles, projectForFile, selectProject } from './project.mjs';
 
@@ -165,6 +167,7 @@ const handlers = {
     lines.push('listen: ' + (l && typeof l === 'object' ? (l.on ? (l.listening ? 'on' : 'on, idle') : 'off') : l ? 'on' : 'off')
       + (s.agent && s.agent.running != null ? ', agent on #' + s.agent.running + (s.agent.queued ? ' (+' + s.agent.queued + ' queued)' : '') : ''));
     if (s.comments) lines.push('comment polling: ' + s.comments);
+    if (linkProblem) lines.push('link: ' + linkProblem);
     if (s.queued) lines.push('queued jobs: ' + s.queued);
     if (s.pendingEvents) lines.push('new comments: ' + s.pendingEvents + ' (figma_comments)');
     return lines.join('\n');
@@ -255,12 +258,21 @@ return out;`;
 
 // Absolute, else relative to the project's jobsDir, the project folder, then the working directory.
 function jobFile(file, project) {
-  if (isAbsolute(file)) return file;
-  const bases = [];
-  if (project) { const f = projectFiles(project); if (f.jobsDir) bases.push(f.jobsDir); bases.push(project.root); }
-  bases.push(process.cwd());
-  const hit = bases.map(b => resolve(b, file)).find(f => existsSync(f));
-  if (!hit) throw new Error('job file not found: ' + file + ' (looked in ' + bases.join(', ') + ')');
+  let hit = file;
+  if (!isAbsolute(file)) {
+    const bases = [];
+    if (project) { const f = projectFiles(project); if (f.jobsDir) bases.push(f.jobsDir); bases.push(project.root); }
+    bases.push(process.cwd());
+    hit = bases.map(b => resolve(b, file)).find(f => existsSync(f));
+    if (!hit) throw new Error('job file not found: ' + file + ' (looked in ' + bases.join(', ') + ')');
+  }
+  const fence = process.env.BRIDGE_FILE_ROOT;
+  if (fence) {
+    // By where the file really is: a link inside the folder may point anywhere.
+    let real, root;
+    try { real = realpathSync(hit); root = realpathSync(fence); } catch (e) { throw new Error('job file not found: ' + file); }
+    if (!real.startsWith(root + sep)) throw new Error("job file outside the session's folder: " + file);
+  }
   return hit;
 }
 
@@ -339,11 +351,13 @@ process.stdin.on('data', chunk => {
 process.stdin.on('end', () => { if (buffer.trim()) onLine(buffer.trim()); buffer = ''; ended = true; settle(); });
 
 // A repo that carries .figma-bridge.json gets its project linked into the bridge home; then the server is
-// started in the background, so the handshake never waits for it (tool calls do).
+// started in the background, so the handshake never waits for it (tool calls do). A refused link (link.mjs says
+// when) is shown by figma_status: the session would otherwise work with an older copy, or none, unnoticed.
+let linkProblem = null;
 (async () => {
   try {
     const repo = findRepoProject(process.cwd());
     if (repo) { const { linkProject } = await import('./link.mjs'); const r = await linkProject(repo); log('linked project', r.name, '→', r.dir); }
-  } catch (e) { log('.figma-bridge.json not linked:', e.message); }
+  } catch (e) { linkProblem = e.message; log('.figma-bridge.json not linked:', e.message); }
   if (!process.env.BRIDGE_NO_AUTOSTART) ensureServer().catch(e => log(e.message));
 })();

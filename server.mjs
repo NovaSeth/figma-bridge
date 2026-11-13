@@ -3,7 +3,7 @@
 // connected and its "Claude słucha komentarzy" toggle is on, gives new comments in the plugin's file to agent.mjs.
 // Start: node server.mjs (install.mjs installs a LaunchAgent that keeps it running).
 import http from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,14 +34,27 @@ const readJson = (file, fallback) => {
 const readLines = file => { try { return readFileSync(file, 'utf8').split('\n').flatMap(l => { try { const v = JSON.parse(l); return v && typeof v === 'object' ? [v] : []; } catch (e) { return []; } }); } catch (e) { return []; } };
 const STATES = ['todo', 'active', 'done'];
 const excerpt = text => String(text).replace(/\s+/g, ' ').slice(0, 70);
-const log = (...a) => console.log(new Date().toISOString(), ...a);
+const stamped = (...a) => console.log(new Date().toISOString(), ...a);
 
 // options are for tests: port 0 picks a free one, figmaFetch replaces the REST client, agent the comment agent.
 export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs = 40000, goneMs = 5000, activeMs = 30 * 60e3, clockSlackMs = 10e3,
-  headersAfterMs = 240e3, beatMs = 60e3, backoffMs = 60e3, figmaApi = process.env.BRIDGE_FIGMA_API || 'https://api.figma.com', figmaFetch = (...a) => fetch(...a), agent: agentOverride = null, agentOptions = {} } = {}) {
+  headersAfterMs = 240e3, beatMs = 60e3, backoffMs = 60e3, log = stamped, figmaApi = process.env.BRIDGE_FIGMA_API || 'https://api.figma.com', figmaFetch = (...a) => fetch(...a), agent: agentOverride = null, agentOptions = {} } = {}) {
   const data = dataDir(), file = name => join(data, name);
   mkdirSync(file('out'), { recursive: true });
+  // Comment texts, screenshots, results and logs are kept here: the user's alone, wherever the home is.
+  try { chmodSync(data, 0o700); } catch (e) {}
   const TOKEN = ensureToken(data);
+  // Compared in constant time.
+  const tokenBytes = Buffer.from(TOKEN);
+  const authorized = given => { const b = Buffer.from(String(given || '')); return b.length === tokenBytes.length && timingSafeEqual(b, tokenBytes); };
+  // A wrong token is something on this machine (or a page in a browser) knocking, or a plugin window from before
+  // the token changed. One line a minute says so without filling the log, and never repeats what was tried.
+  let rejectedAt = 0, rejectedMore = 0;
+  const rejected = req => {
+    if (Date.now() - rejectedAt < 60e3) { rejectedMore++; return; }
+    log('rejected: bad token on ' + req.method + ' ' + String(req.url).split('?')[0] + (rejectedMore ? ' (and ' + rejectedMore + ' more since the last such line)' : ''));
+    rejectedAt = Date.now(); rejectedMore = 0;
+  };
 
   const queue = [], waiting = new Map();
   let seq = 0;
@@ -242,7 +255,18 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
 
   const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'X-Bridge-Token, Content-Type', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' };
   const send = (res, code, body) => { res.writeHead(code, { ...cors, 'Content-Type': 'application/json' }); res.end(body === undefined ? '' : JSON.stringify(body)); };
-  const readBody = req => new Promise((ok, fail) => { const parts = []; req.on('data', c => parts.push(c)); req.on('end', () => { try { ok(JSON.parse(Buffer.concat(parts).toString('utf8') || '{}')); } catch (e) { fail(e); } }); });
+  // The body of a request: a JSON object (none is {}). Anything else is the caller's mistake, a 400.
+  const readBody = req => new Promise((ok, fail) => {
+    const parts = [];
+    req.on('data', c => parts.push(c));
+    req.on('end', () => {
+      try {
+        const m = JSON.parse(Buffer.concat(parts).toString('utf8') || '{}');
+        if (!m || typeof m !== 'object' || Array.isArray(m)) throw new Error('expected a JSON object');
+        ok(m);
+      } catch (e) { fail(Object.assign(new Error('bad request: ' + e.message), { status: 400 })); }
+    });
+  });
   // A job that names a file waits for a window of that file; any other goes to the current window.
   const handOut = () => {
     for (let i = 0; i < queue.length; i++) {
@@ -250,6 +274,8 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
       const w = target ? [...windows.values()].find(x => x.poller && x.fileKey === target) : current();
       if (!w || !w.poller) continue;
       queue.splice(i--, 1);
+      const waits = waiting.get(job.id);
+      if (waits) waits.ranIn = w.fileKey;
       const { res, timer } = w.poller;
       w.poller = null; clearTimeout(timer);
       send(res, 200, job);
@@ -269,15 +295,23 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
   };
 
   // One queue for jobs from run.mjs/mcp.mjs (HTTP) and from the agent (in process). done(null) = timeout.
-  const addJob = ({ code, label = '', dryRun = false, prelude = '', timeoutMs = 120000, file: target = null }, done) => {
-    const id = 'j' + (++seq) + '-' + Date.now();
+  // Every job leaves a line in the log: which, in which file, how it went. Never its code or its result.
+  const addJob = ({ code, label = '', dryRun = false, prelude = '', timeoutMs = 120000, file: target = null }, answer) => {
+    const id = 'j' + (++seq) + '-' + Date.now(), startedAt = Date.now();
+    const done = (out, ranIn) => {
+      const how = !out ? 'timeout' : out.ok ? 'ok' : 'failed';
+      log('job ' + id + ' ' + JSON.stringify(String(label || '').slice(0, 60)) + ' file=' + (ranIn || target || '-') + (dryRun ? ' dry-run ' : ' ') + how + ' ' + (Date.now() - startedAt) + ' ms'
+        + (out && !out.ok ? ': ' + String(out.error).replace(/\s+/g, ' ').slice(0, 200) : ''));
+      answer(out);
+    };
     // A timer holds 31 bits of milliseconds; given more, Node fires it at once.
     const limit = Math.min(Math.max(Number(timeoutMs) || 120000, 1), 2 ** 31 - 1);
     const timer = setTimeout(() => {
+      const w = waiting.get(id);
       if (!waiting.delete(id)) return;
       const i = queue.findIndex(j => j.id === id);
       if (i >= 0) queue.splice(i, 1); // never picked up: a late plugin must not run a job nobody waits for
-      done(null);
+      done(null, w.ranIn);
     }, limit);
     waiting.set(id, { timer, done });
     queue.push({ id, code: String(code || ''), label: String(label || '').slice(0, 60), dryRun: !!dryRun, prelude: typeof prelude === 'string' ? prelude : '', timeoutMs: limit, file: target || null });
@@ -316,7 +350,7 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
   const schedulePoll = () => { clearTimeout(pollSoon); pollSoon = setTimeout(pollComments, 300); };
   const server = http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') return send(res, 204);
-    if (req.headers['x-bridge-token'] !== TOKEN) return send(res, 401, { error: 'bad token' });
+    if (!authorized(req.headers['x-bridge-token'])) { rejected(req); return send(res, 401, { error: 'bad token' }); }
     try {
       const url = new URL(req.url, 'http://localhost'), path = url.pathname, query = url.searchParams;
       if (req.method === 'GET' && path === '/next') {
@@ -347,7 +381,7 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
             writeFileSync(dryRunReport, JSON.stringify(m.dryRun, null, 1));
             dryRun = { ...m.dryRun, entries: (m.dryRun.entries || []).slice(0, 20) };
           }
-          w.done({ ok: m.ok, result: m.result, error: m.error, images, dryRun, dryRunReport });
+          w.done({ ok: m.ok, result: m.result, error: m.error, images, dryRun, dryRunReport }, w.ranIn);
         }
         return send(res, 200, { ok: true });
       }
@@ -431,7 +465,7 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
           file: pluginFile(), ...(open.length > 1 ? { files: open } : {}), comments: commentsState(), listen: { on: !!state.listen, listening: listening() }, agent: agent.state() });
       }
       send(res, 404, { error: 'not found' });
-    } catch (e) { send(res, 500, { error: String(e.message || e) }); }
+    } catch (e) { send(res, e.status || 500, { error: String(e.message || e) }); }
   });
 
   const timers = [

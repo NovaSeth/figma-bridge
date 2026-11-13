@@ -115,9 +115,13 @@ FRAME "Inbox" 1:19 390×844 @100,40 V gap16 p24/16 fill=color/surface
 `[+N]` oznacza N dzieci, których zarys nie rozwija. `gap=space/md` i `fill=color/surface` to nazwy zmiennych,
 a `style:` poprzedza nazwę stylu.
 
-`step` w `figma_run` wiąże skrypt z istniejącym krokiem planu (początek tekstu albo `#N`). Przed startem krok ma stan
-„w toku”, po udanym przebiegu „zrobione”. Gdy skrypt padnie, krok **zostaje w toku**, bo plan ma mówić, co się
-naprawdę stało.
+`step` w `figma_run` wiąże skrypt z istniejącym krokiem planu (początek tekstu albo `#N`, czyli wątek o tym
+numerze i żaden inny). Przed startem krok ma stan „w toku”, po udanym przebiegu „zrobione”. Gdy skrypt padnie, krok
+**zostaje w toku**, bo plan ma mówić, co się naprawdę stało.
+
+Skrypt może trwać dłużej niż 5 minut (`timeoutMs` do godziny): serwer podtrzymuje wtedy odpowiedź, żeby klient
+nie zerwał połączenia. Po przekroczeniu `timeoutMs` odpowiedź to `ok: false`, okno wtyczki pokazuje „Krok
+przekroczył czas”, a skrypt, którego wtyczka nie skończyła, działa dalej, bo nie da się go przerwać.
 
 ### Wtyczka w kilku plikach naraz
 
@@ -213,9 +217,17 @@ w `run.mjs`. W trybie komentarzy folder projektu jest katalogiem roboczym Claude
 **Projekt w repozytorium (opcjonalnie).** Repo może mieć plik `.figma-bridge.json` z tymi samymi kluczami. Ścieżki
 w nim są względne wobec tego pliku i muszą leżeć wewnątrz repo. Gdy Claude Code startuje w tym repo albo w jego
 podkatalogu, MCP kopiuje plik i wszystko, na co wskazuje, do `projects/<name>/`. Ręcznie robi to
-`node ~/Library/Application\ Support/Claude\ Figma\ Bridge/app/link.mjs [katalog]`. To kopia, a nie dowiązanie:
-po zmianach w repo zacznij nową sesję albo uruchom `link.mjs` ponownie. Kopia jest potrzebna, bo serwer w tle
-nie ma dostępu do `~/Documents` i podobnych folderów.
+`node ~/Library/Application\ Support/Claude\ Figma\ Bridge/app/link.mjs [--force] [katalog]`. To kopia, a nie
+dowiązanie: po zmianach w repo zacznij nową sesję albo uruchom `link.mjs` ponownie. Kopia jest potrzebna, bo serwer
+w tle nie ma dostępu do `~/Documents` i podobnych folderów.
+
+Łączenie dzieje się bez pytania, więc repo może tylko dodać własny projekt albo odświeżyć ten, który samo
+wcześniej połączyło. Odmowa następuje, gdy:
+- projekt o tej nazwie powstał ręcznie albo pochodzi z innego repo (zastąpi go dopiero `link.mjs --force`),
+- któryś klucz z `files` należy już do innego projektu (jego preludia i prompt trafiałyby do cudzego pliku),
+- ścieżka jest dowiązaniem prowadzącym poza repo. Dowiązania wewnątrz kopiowanych folderów są pomijane.
+
+Powód odmowy pokazuje `figma_status` w linii `link:`.
 
 ## Próba na sucho
 
@@ -302,7 +314,7 @@ node run.mjs --status                          # stan serwera, wtyczki i komenta
 node run.mjs tools/smoke-test.js --dry-run     # bezpieczny test mostu na otwartym pliku
 node plan.mjs [--file plik] "x:zrobione" ">:w toku" "-:do zrobienia"    # także --add, --active "#12", --done "tekst", --clear-done
 node wait.mjs                                  # czeka na komentarz i wypisuje zdarzenia jako jedną linię JSON
-node tools/snapshot.mjs [etykieta] [strona]    # zrzuty ramek strony do data/out/<etykieta>/
+node tools/snapshot.mjs [etykieta] [strona]    # zrzuty ramek strony do data/out/<etykieta>/ (etykieta: litery, cyfry, . _ -)
 node tools/sheet.mjs [katalog w out/] [prefiks] [na arkusz]   # arkusze ze zrzutami (Playwright)
 node tools/export-design-md.mjs [--project nazwa | --config plik] [--input plik] [wyjście]
 ```
@@ -324,12 +336,17 @@ do jednego z nich.
 - Kto zna token mostu i ma dostęp do tego komputera, może wykonać dowolny kod w otwartym pliku. Nie udostępniaj
   `token.txt` ani `ui.html`. Nowy token: usuń `data/token.txt`, uruchom `node install.mjs` i otwórz wtyczkę ponownie.
 - Tokeny Figmy (`data/figma-token*.txt`, 0600) służą tylko do czytania komentarzy i odpowiadania w wątkach przez
-  `api.figma.com`.
+  `api.figma.com`. Katalog `data/` (treść komentarzy, zrzuty, wyniki, logi) ma prawa 0700.
+- `data/logs/server.log` dostaje linię dla każdego zadania: etykieta, plik, czy to próba, wynik i czas, nigdy kod
+  ani wynik skryptu. Żądania ze złym tokenem są notowane jako `rejected: bad token on …`, najwyżej raz na minutę.
 - W trybie komentarzy działa `claude -p --permission-mode dontAsk --restricted --tools Read,Write,Edit,Glob,Grep
   --strict-mcp-config`. Ma tylko MCP figma-bridge i narzędzia `mcp__figma-bridge__*`, `Read`, `Write`, `Edit`, `Glob`
   i `Grep`, a do tego limit kosztu i czasu. `--restricted` odcina narzędzia uruchamiające kod i WebFetch, pomija
   Twoje pliki ustawień Claude Code (ich reguły `allow` nie poszerzą tej listy) i zamyka operacje na plikach
   w katalogu roboczym: folderze projektu albo `data/scratch/`. Wymaga Claude Code z flagą `--restricted`.
+  Ten sam płot obowiązuje w MCP tej sesji: `figma_run {file}` bierze skrypty tylko z katalogu roboczego
+  (`BRIDGE_FILE_ROOT`), a wszystkie zadania idą do pliku komentarza (`FIGMA_FILE`). Bez tego namówiona sesja
+  mogłaby wczytać dowolny plik z dysku jako „skrypt” i wynieść jego treść w komunikacie błędu.
 - Treść komentarza trafia do promptu. Gdy słuchanie jest włączone, każdy, kto może komentować plik, może zlecić
   Claude'owi zmianę. Włączaj je tylko w plikach z zaufanymi osobami.
 
@@ -366,8 +383,14 @@ w Settings → Security.
   sięga tego pliku. Utwórz token z zakresem File comments z odczytem i zapisem, na koncie z dostępem do pliku
   (drugie konto: `add-token.sh <nazwa>`). Token tylko z odczytem czyta komentarze, ale odpowiedzi w wątkach się
   nie udają. Jeśli to plik z `files` projektu, do którego nie masz już dostępu, usuń go z tej listy.
-- **`HTTP 429 (limit zapytań)`**: serwer co 15 s pyta o komentarze plików, w których wtyczka działała w ostatnich
-  30 minutach, i wszystkich plików z `files` w projektach, więc ogranicz tę listę.
+- **`HTTP 429 (limit zapytań, przerwa do GG:MM)`**: serwer co 15 s pyta o komentarze plików, w których wtyczka
+  działała w ostatnich 30 minutach, i wszystkich plików z `files` w projektach, więc ogranicz tę listę. Po 429
+  zostawia plik w spokoju na czas podany przez Figmę (`Retry-After`), a bez niego na minutę, potem dwie, cztery,
+  najwyżej godzinę.
+- **Okno wtyczki: „Krok przekroczył czas”**: skrypt nie odesłał wyniku w swoim `timeoutMs`. Jeśli Figma nie
+  reaguje, skrypt wciąż liczy: dodaj w jego pętlach `await breathe()` albo daj mu więcej czasu.
+- **`figma_status` pokazuje `link: …`**: `.figma-bridge.json` z tego repo nie został połączony. Linia mówi
+  dlaczego i jak to nadpisać (`link.mjs --force`).
 - **Claude nie reaguje na komentarz**: sprawdź notkę pod przełącznikiem, czy wtyczka jest otwarta w tym pliku, czy
   komentarz zaczyna nowy wątek i czy powstał po włączeniu słuchania. Stan `pominięte: limit 6/h` w planie oznacza
   godzinny limit. Przy stanie `nieudane` szukaj linii `agent #N` w `data/logs/server.log`. Jeśli `claude` zmienił
@@ -377,6 +400,8 @@ w Settings → Security.
 
 - `npm test` uruchamia `node --test test/*.test.mjs`. Testy używają atrapy Plugin API (`test/mock-figma.mjs`),
   tymczasowego `BRIDGE_HOME` oraz udawanych `claude` i `launchctl`. Nie potrzebują sieci ani Figmy.
+  `test/security.test.mjs` trzyma kontrakt bezpieczeństwa według nagłówków OWASP Top 10, a `test/ui.test.mjs`
+  uruchamia skrypt okna wtyczki na prawdziwym serwerze.
 - Zmiany z repo trafiają do działającego mostu przez `node install.mjs`. Po zmianach w `code.js`,
   `ui.template.html` albo `manifest.json` otwórz wtyczkę ponownie.
 - Bez zainstalowanego katalogu mostu `node server.mjs` w repo używa samego repo jako katalogu mostu (`data/`

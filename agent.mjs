@@ -35,11 +35,15 @@ export const ALLOWED_TOOLS = 'mcp__figma-bridge__*,' + BUILTIN_TOOLS;
 // list below) and keeps the file tools inside the working directory; --tools names the only built-ins it gets.
 // A prompt starting with "-" (a front-matter "---") would be parsed as an option; a leading newline is harmless.
 // fileKey: the session's MCP server sends every job to the plugin window of that file (FIGMA_FILE), so the plugin
-// being open in a second file cannot turn the comment's edits there.
-export const claudeArgs = (prompt, { mcpPath, budgetUsd, fileKey = null }) => ['-p', prompt.startsWith('-') ? '\n' + prompt : prompt, '--output-format', 'json', '--permission-mode', 'dontAsk',
+// being open in a second file cannot turn the comment's edits there. fileRoot: figma_run {file} reads job files
+// from that folder only (BRIDGE_FILE_ROOT), the same fence --restricted puts around the session's file tools.
+export const claudeArgs = (prompt, { mcpPath, budgetUsd, fileKey = null, fileRoot = null }) => {
+  const env = Object.assign({}, fileKey ? { FIGMA_FILE: fileKey } : {}, fileRoot ? { BRIDGE_FILE_ROOT: fileRoot } : {});
+  return ['-p', prompt.startsWith('-') ? '\n' + prompt : prompt, '--output-format', 'json', '--permission-mode', 'dontAsk',
   '--restricted', '--tools', BUILTIN_TOOLS, '--strict-mcp-config', '--mcp-config',
-  JSON.stringify({ mcpServers: { 'figma-bridge': Object.assign({ command: 'node', args: [mcpPath] }, fileKey ? { env: { FIGMA_FILE: fileKey } } : {}) } }),
+  JSON.stringify({ mcpServers: { 'figma-bridge': Object.assign({ command: 'node', args: [mcpPath] }, Object.keys(env).length ? { env } : {}) } }),
   '--allowedTools', ALLOWED_TOOLS, '--max-budget-usd', String(budgetUsd)];
+};
 
 // The thread gets the closing sentence the prompt asks for, not the whole transcript.
 export const summarize = text => {
@@ -87,7 +91,7 @@ export function createAgent({ runJob, reply, setStatus, ready = () => true, proj
       }
       const cwd = p ? p.root : scratchDir();
       mkdirSync(cwd, { recursive: true });
-      const r = await runClaude(claudeArgs(renderPrompt(p && p.prompt ? readFileSync(p.prompt, 'utf8').trimEnd() : DEFAULT_PROMPT, { ...e, inspect }), { mcpPath, budgetUsd, fileKey: e.fileKey }), cwd);
+      const r = await runClaude(claudeArgs(renderPrompt(p && p.prompt ? readFileSync(p.prompt, 'utf8').trimEnd() : DEFAULT_PROMPT, { ...e, inspect }), { mcpPath, budgetUsd, fileKey: e.fileKey, fileRoot: cwd }), cwd);
       if (!r.ok) { log(`#${e.number}: failed (${r.why})`); return setStatus(e, 'todo', 'nieudane'); }
       const summary = summarize(r.out.result);
       const sent = await reply(e.fileKey, e.id, 'Claude: ' + (summary || 'zrobione.') + '\n\n' + REPLY_TAIL);

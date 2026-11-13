@@ -9,6 +9,8 @@ import { codeDir as bridge, dataDir } from '../paths.mjs';
 
 const out = join(dataDir(), 'out'), BATCH = 8;
 const [label = 'after', pageName = null] = process.argv.slice(2);
+// The label names a folder under out/ and is written into the job: a plain name, nothing that is a path or code.
+if (!/^[\w.-]+$/.test(label) || /^\.+$/.test(label)) { console.error('usage: node tools/snapshot.mjs [label] [page name]   label: letters, digits, "." "_" "-"'); process.exit(2); }
 const tmp = mkdtempSync(join(tmpdir(), 'bridge-snapshot-')), jobFile = join(tmp, 'snapshot.js');
 mkdirSync(join(out, label), { recursive: true });
 // Batches keep each job under the plugin's timeout; every batch recomputes the same frame list, so slices line up.

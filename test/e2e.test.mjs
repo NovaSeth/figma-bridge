@@ -177,6 +177,26 @@ test('plan.mjs sets and marks the plan of one file and says which', async () => 
   await api('/plan', { tasks: [] });
 });
 
+test('A03: tools/snapshot.mjs takes a plain label only: it names a folder and goes into the job', async () => {
+  const snapshot = (...args) => new Promise(ok => {
+    const child = spawn(process.execPath, [join(root, 'tools', 'snapshot.mjs'), ...args], { env, cwd: work });
+    let err = '';
+    child.stderr.on('data', d => { err += d; });
+    child.on('exit', code => ok({ code, err }));
+  });
+  const before = fx.mock.snapshot();
+  for (const label of ['x\nfigma.root.name = "pwned"', '../../outside', 'a/b', '']) {
+    const r = await snapshot(label);
+    assert.equal(r.code, 2, JSON.stringify(label) + ' → ' + r.code + ' ' + r.err);
+    assert.match(r.err, /label/);
+  }
+  assert.deepEqual(fx.mock.snapshot(), before);
+  assert.ok(!existsSync(join(home, 'outside')));
+  const fine = await snapshot('before-1.2');
+  assert.equal(fine.code, 0, fine.err);
+  assert.ok(existsSync(join(home, 'data', 'out', 'before-1.2')));
+});
+
 test('--no-prelude sends none; bad combinations and missing files stop before sending', async () => {
   const bare = await runCli(job('bare.js', 'return typeof hex'), '--no-prelude');
   assert.equal(bare.code, 0, bare.out + bare.err);

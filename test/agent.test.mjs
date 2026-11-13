@@ -92,6 +92,17 @@ test('the session of a comment is tied to the comment\'s file: its MCP server ge
   assert.deepEqual(JSON.parse(args[args.indexOf('--mcp-config') + 1]), { mcpServers: { 'figma-bridge': { command: 'node', args: ['/h/app/mcp.mjs'], env: { FIGMA_FILE: 'KEY1' } } } });
 });
 
+test('the session of a comment gets job files from its working directory only: its MCP server gets BRIDGE_FILE_ROOT', async () => {
+  const root = join(dir, 'projects', 'fenced');
+  mkdirSync(root, { recursive: true });
+  const { agent } = rig({ project: { root, prompt: null } });
+  agent.enqueue(loose);
+  await agent.idle();
+  const [run] = readLog().filter(l => l.start);
+  const config = JSON.parse(run.argv[run.argv.indexOf('--mcp-config') + 1]);
+  assert.deepEqual(config.mcpServers['figma-bridge'].env, { FIGMA_FILE: 'KEY1', BRIDGE_FILE_ROOT: root });
+});
+
 test('the reply carries the closing sentence, not the transcript', () => {
   assert.equal(summarize('Checked.\n\nMoved the **chip** 4 px\nleft.'), 'Moved the chip 4 px left.');
   assert.equal(summarize(''), '');
@@ -108,7 +119,7 @@ test('a comment runs end to end: inspect prefetch, prompt, claude in the project
   // The outline is read in the comment's file, wherever else the plugin is open too.
   assert.deepEqual(calls.jobs, [{ code: 'return await inspect("1:2", { depth: 2 })', prelude: '/* prelude */', label: 'Komentarz #47', timeoutMs: 30000, file: 'KEY1' }]);
   const [run] = readLog().filter(l => l.start);
-  assert.deepEqual(run.argv, claudeArgs('Do #47 "Move the chip 4 px left" on 1:2\nFRAME "Chip" 1:2 40×24', { mcpPath: '/app/mcp.mjs', budgetUsd: 3, fileKey: 'KEY1' }));
+  assert.deepEqual(run.argv, claudeArgs('Do #47 "Move the chip 4 px left" on 1:2\nFRAME "Chip" 1:2 40×24', { mcpPath: '/app/mcp.mjs', budgetUsd: 3, fileKey: 'KEY1', fileRoot: root }));
   assert.equal(run.cwd, await import('node:fs').then(fs => fs.realpathSync(root)));
   assert.equal(run.nested, null, 'CLAUDECODE is dropped: claude refuses to start inside another session');
   assert.equal(run.home, join(dir, 'home'), 'the MCP server claude starts finds the same bridge home');

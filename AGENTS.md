@@ -7,7 +7,7 @@ through the Claude Bridge plugin window, which must stay open. Setup is in READM
 
 | Tool | Params (default) | Returns |
 |---|---|---|
-| `figma_status` | `file` (switch the session to another open file: key or part of the name) | lines `plugin:`, `file: "name" key`, `other open files: "name" key; …` (when the plugin is open in several), `page:`, `selection: id TYPE "name"; …` (≤10), `project:`, `listen: on\|on, idle\|off`, `comment polling:`; `queued jobs:` / `new comments:` when > 0 |
+| `figma_status` | `file` (switch the session to another open file: key or part of the name) | lines `plugin:`, `file: "name" key`, `other open files: "name" key; …` (when the plugin is open in several), `page:`, `selection: id TYPE "name"; …` (≤10), `project:`, `listen: on\|on, idle\|off`, `comment polling:`; `queued jobs:` / `new comments:` when > 0; `link:` when the repo's `.figma-bridge.json` was refused |
 | `figma_inspect` | `target`=selection \| page \| file \| node id \| name; `depth`=3 (0–50); `maxLines`=200 (1–2000) | outline, one line per node |
 | `figma_find` | `query` (required; case-insensitive substring or `/regex/flags`, matches the name or a TEXT node's content); `type` (`TEXT` or `FRAME,INSTANCE`); `page`; `limit`=30 (1–1000) | one line per match, all pages |
 | `figma_library` | `kind` (required: variables \| styles \| components); `filter` (substring or `/regex/`) | local tokens, styles or components |
@@ -53,8 +53,11 @@ A failing tool answers `error: …` with `isError`. Plugin closed: `the Claude B
   `figma.setCurrentPageAsync`, and load a page (`page.loadAsync()`, `figma.loadAllPagesAsync()`, `usePage`) before
   reading it.
 - A real run that throws removes only the new top-level nodes on its start page (sections stay). Every other
-  write stays.
-- A timeout answers `ok: false`, but a job the plugin already started keeps running.
+  write stays. When another job ran at the same time nothing is removed (the error says so): the newcomers may
+  be that job's.
+- A timeout answers `ok: false`, but a job the plugin already started keeps running. `timeoutMs` may exceed
+  5 minutes (the server keeps the answer alive).
+- `progress()` reaches the window ten times a second at most, so calling it for every node is fine.
 - An answer over 20000 chars saves the full result to `<data>/out/result-<ms>.json`. The answer then carries
   `resultFile`, `resultChars` and the first 10000 chars in `result`.
 
@@ -135,6 +138,8 @@ comments    #12 id=<id> [reply-to=<root id>] @author [node=<id>] [file=<key> whe
   Use `cloneVariant(set, source, name)`.
 - A wrong selector (a name that matches more than meant, a stale id, the wrong page) edits the wrong nodes. Dry-run
   first and compare `touched` and `entries` with what you meant to change.
+- `mark: "#12"` is thread 12 exactly; any other `mark` is the start of a step's text and marks every step that
+  starts with it in the file's plan.
 - In a dry run, a read after an intercepted write returns the old value, and `shot()` exports the unchanged file.
   Code that branches on its own writes takes a different path than it will for real.
 - In a dry run, finish before returning and `await` everything. Calls after the end fail with `dry run is over`.
@@ -160,6 +165,13 @@ comments    #12 id=<id> [reply-to=<root id>] @author [node=<id>] [file=<key> whe
 - `npm test` runs `node --test test/*.test.mjs` against a mock Plugin API (`test/mock-figma.mjs`), a temporary
   `BRIDGE_HOME` and fake `claude` / `launchctl` on `PATH`. Tests need no network and no Figma. Never run the
   installer against the real home, LaunchAgents or MCP config.
+- A fix or a feature starts with a test that fails for the right reason. Wait on a condition, not on a fixed
+  time, when a test depends on a child process. `test/security.test.mjs` holds the security contract by OWASP
+  Top 10 heading: every request needs the token, plugin-given names stay inside `data/out`, the comment agent's
+  session reads job files from its own folder only (`BRIDGE_FILE_ROOT`), `link.mjs` never replaces a project
+  from elsewhere.
+- The plugin window may be older than the server (it is replaced only when reopened): the server keeps
+  answering a window without `?win=`, and `prelude.js` must not assume what a newer `code.js` passes in.
 - Output size is part of the contract: tests hold the tool list to ≤ 2900 chars and put budgets on inspect, find
   and library output. Keep tool descriptions and answers short.
 - The repo stays generic: no project names, file keys, prompts or fixtures from a real project. Project material

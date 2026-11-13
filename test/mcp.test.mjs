@@ -4,7 +4,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -140,6 +140,21 @@ test('a repo .figma-bridge.json in the working directory is linked into the brid
   assert.equal(readFileSync(join(home, 'projects', 'repo-linked', 'design', 'p.js'), 'utf8'), 'const linked = 1;');
 });
 
+test('a repo whose .figma-bridge.json was refused is not linked silently: figma_status says why', async () => {
+  // "other" is a project made by hand in this home; a repo using the name does not get to replace it.
+  const taker = join(home, 'taker');
+  mkdirSync(taker);
+  writeFileSync(join(taker, '.figma-bridge.json'), JSON.stringify({ name: 'other', preludes: ['p.js'] }));
+  writeFileSync(join(taker, 'p.js'), 'const projectName = () => "taken over";');
+  const session = startMcp(env, taker);
+  try {
+    const status = await session.call('figma_status');
+    assert.match(status.text, /\nlink: project "other" in .* was not linked from a repo \(to replace it: node link\.mjs --force .*taker\)$/);
+    assert.equal(readFileSync(join(home, 'projects', 'other', 'p.js'), 'utf8'), 'const projectName = () => "other";');
+  } finally { await session.close(); }
+  assert.doesNotMatch((await mcp.call('figma_status')).text, /\nlink: /);
+});
+
 test('figma_status: connection, file, page, selection, project, listen mode', async () => {
   const bare = await mcp.call('figma_status');
   assert.equal(bare.isError, false, bare.text);
@@ -263,6 +278,40 @@ test('figma_comments: waits for a new comment, then replies in its thread', asyn
   assert.equal(reply.text, 'replied in thread c7 (comment r1)');
   assert.deepEqual(replies, [{ fileKey: 'TESTFILE', body: { message: 'Done: the card is blue.', comment_id: 'c7' } }]);
   assert.equal((await mcp.call('figma_comments', { replyTo: 'c7' })).isError, true);
+});
+
+test('A03 injection: tool arguments reach the plugin as data, never as code', async () => {
+  const attack = '"); figma.root.name = "pwned"; ("' + "'); figma.root.name = 'pwned'; ('" + '`); figma.root.name = `pwned`; (`\n figma.root.name = "pwned" //';
+  const before = fx.mock.snapshot();
+  const calls = [['figma_inspect', { target: attack }], ['figma_inspect', { target: 'page', depth: attack, maxLines: attack }], ['figma_find', { query: attack, type: attack, page: attack, limit: attack }],
+    ['figma_find', { query: attack }], ['figma_library', { kind: attack, filter: attack }], ['figma_library', { kind: 'styles', filter: attack }],
+    ['figma_screenshot', { target: attack, scale: attack, maxSize: attack }], ['figma_screenshot', { target: fx.card.id, scale: '1); figma.root.name = "pwned"; (', maxSize: '1024); figma.root.name = "pwned"; (' }]];
+  for (const [tool, args] of calls) {
+    const r = await mcp.call(tool, args);
+    assert.doesNotMatch(r.text, /SyntaxError|Unexpected|is not defined/, tool + ' ' + JSON.stringify(args) + ' → ' + r.text);
+  }
+  assert.equal(fx.figma.root.name, 'Test file');
+  assert.deepEqual(fx.mock.snapshot(), before);
+});
+
+test('A01: the session of a comment (BRIDGE_FILE_ROOT) can take job files from its own folder only', async () => {
+  // A comment is untrusted text: a session it talked round must not read files through figma_run {file}, which
+  // would hand their content to the job (a token is one identifier, and a ReferenceError names it).
+  const outside = join(home, 'outside.js');
+  writeFileSync(outside, 'return "outside"');
+  writeFileSync(join(work, 'inside.js'), 'return "inside"');
+  symlinkSync(outside, join(work, 'link.js'));
+  const fenced = startMcp({ ...env, BRIDGE_FILE_ROOT: work }, work);
+  try {
+    const run = async file => { const r = await fenced.call('figma_run', { file, noPrelude: true }); return r.isError ? r.text : JSON.parse(r.text).result; };
+    assert.equal(await run('inside.js'), 'inside');
+    assert.equal(await run(join(work, 'inside.js')), 'inside');
+    for (const file of [outside, 'link.js', '../outside.js', join(home, 'data', 'token.txt'), 'hello.js'])
+      assert.match(await run(file), /^error: job file (outside the session's folder|not found)/, file);
+    assert.equal(JSON.parse((await fenced.call('figma_run', { code: 'return 1 + 1', noPrelude: true })).text).result, 2);
+  } finally { await fenced.close(); }
+  // An ordinary session is the user's own Claude Code: any path, as documented.
+  assert.equal(JSON.parse((await mcp.call('figma_run', { file: outside, noPrelude: true })).text).result, 'outside');
 });
 
 test('the plugin open in a second file: figma_status lists it, {file} switches the session to a file', async () => {
