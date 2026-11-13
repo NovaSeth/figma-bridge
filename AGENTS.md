@@ -188,6 +188,11 @@ comments    #12 id=<id> [reply-to=<root id>] @author [node=<id>] [file=<key> whe
   lives in `<home>/projects/`.
 - `node install.mjs` deploys the checkout to `<home>/app` and restarts the server; `--verify` lists drift. Reopen the
   plugin after changing `code.js`, `ui.template.html` or `manifest.json`.
+- Figma imports the plugin from the checkout (`manifest.json` here), by the owner's choice: not from `<home>/app`.
+  The installer writes the plugin window, `ui.html`, next to it (bridge token inside, 0600, git-ignored); the
+  server cannot, launchd having no access to `~/Documents`. Do not delete that file as a leftover, and run the
+  installer in tests only from a copy of the checkout (`test/install.test.mjs` does), or the test's token
+  replaces the real window.
 
 ## Server (server.mjs, 127.0.0.1 only; every request carries `X-Bridge-Token`)
 

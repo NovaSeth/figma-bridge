@@ -32,7 +32,8 @@ Claude Code ─stdio─ mcp.mjs ─HTTP─ server.mjs (127.0.0.1:8765) ─ okno 
 Serwer działa w tle jako LaunchAgent i nic nie robi, dopóki wtyczka się nie połączy. Okno wtyczki pyta serwer
 o zadania, wykonuje je w pliku i odsyła wynik.
 
-Wszystko, co działa, leży poza repozytorium:
+Wtyczkę Figma ładuje prosto z repo: `manifest.json`, `code.js` i `ui.html`, które instalator generuje obok nich
+(zawiera token mostu, ma prawa 0600 i jest pomijane przez git). Serwer, dane i projekty leżą poza repozytorium:
 
 ```
 ~/Library/Application Support/Claude Figma Bridge/
@@ -43,7 +44,8 @@ Wszystko, co działa, leży poza repozytorium:
 ```
 
 Katalog leży w `~/Library`, bo macOS (TCC) nie daje zadaniom launchd dostępu do `~/Documents`, `~/Desktop`
-ani `~/Downloads`. Samo repo może leżeć gdziekolwiek.
+ani `~/Downloads`. Samo repo może leżeć gdziekolwiek, także tam: z repo czyta tylko Figma, a `ui.html` zapisuje
+w nim instalator uruchamiany z terminala.
 
 ## Wymagania
 
@@ -67,7 +69,9 @@ ani `~/Downloads`. Samo repo może leżeć gdziekolwiek.
    `local.claude-figma-bridge`, który uruchamia serwer z systemem. Rejestruje też MCP `figma-bridge` w Claude Code
    dla wszystkich projektów (`claude mcp add --scope user`). Można go uruchamiać wielokrotnie (to samo robi
    `npm run setup`). Samo `npm install` nie instaluje mostu (pobiera tylko opcjonalnego Playwrighta).
-2. W Figma desktop wybierz Plugins → Development → Import plugin from manifest… i wskaż plik podany przez instalator:
+2. W Figma desktop wybierz Plugins → Development → Import plugin from manifest… i wskaż `manifest.json` w katalogu
+   repo (instalator podaje pełną ścieżkę). Repo musi potem zostać na miejscu: po przeniesieniu uruchom instalator
+   ponownie i zaimportuj wtyczkę z nowego miejsca. Kto nie chce trzymać repo, może zaimportować kopię
    `~/Library/Application Support/Claude Figma Bridge/app/manifest.json`.
 3. Token Figmy (potrzebny tylko do komentarzy): w Figmie wejdź w Settings → Security → Personal access tokens →
    Generate new token i nadaj zakres File comments z odczytem i zapisem. Skopiuj token i uruchom:
@@ -335,7 +339,8 @@ do jednego z nich.
 ## Bezpieczeństwo
 
 - Serwer słucha tylko na `127.0.0.1:8765`. Każde żądanie wymaga tokenu mostu z `data/token.txt` (losowy, plik 0600).
-  Ten sam token jest w `app/ui.html` (też 0600), bo wtyczka musi go znać.
+  Ten sam token jest w `ui.html` w repo i w `app/ui.html` (oba 0600, ten w repo pomijany przez git), bo wtyczka
+  musi go znać.
 - Wtyczka łączy się tylko z `http://localhost:8765`. Działa tylko w pliku, w którym ją uruchomiono, i tylko dopóki
   jej okno jest otwarte. Jej zasięg to Plugin API: warstwy, style, zmienne, komponenty, strony i eksport. Nie widzi
   innych plików (poza opublikowanymi bibliotekami, z których plik może importować), komentarzy, udostępniania ani
@@ -368,7 +373,7 @@ do jednego z nich.
 Z katalogu repo (instalatora nie ma w `app/`):
 
 ```sh
-node install.mjs --uninstall   # usuwa LaunchAgenta, wpis MCP i app/; data/ i projects/ zostają
+node install.mjs --uninstall   # usuwa LaunchAgenta, wpis MCP, app/ i ui.html z repo; data/ i projects/ zostają
 node install.mjs --purge       # to samo, a do tego data/ (tokeny, wyniki, logi)
 ```
 
@@ -386,12 +391,12 @@ w Settings → Security.
   i logi `data/logs/server.log` oraz `server.err`. Restart: `launchctl kickstart -k gui/$(id -u)/local.claude-figma-bridge`
   albo ponownie `node install.mjs`. Komunikat „Port 8765 is taken” w `server.err` oznacza, że działa drugi serwer
   (np. `node server.mjs` uruchomiony ręcznie).
-- **Okno wtyczki: „Most odrzucił połączenie (401)”**: wtyczka ma inny token niż serwer. Zaimportuj ją
-  z `app/manifest.json` w katalogu mostu (nie z repo), zamknij jej okno i otwórz ponownie.
-- **Figma: „Unable to load code … no such file or directory … ui.html”**: wtyczka jest zaimportowana z manifestu
-  w repo, a nie z `app/manifest.json` w katalogu mostu (instalator ostrzega o tym na końcu). Zaimportuj ją
-  z `app/manifest.json`: w oknie wyboru pliku `Cmd+Shift+G` pozwala wkleić ścieżkę do `~/Library/…`. Starą usuń
-  w Plugins → Development → Manage plugins in development.
+- **Okno wtyczki: „Most odrzucił połączenie (401)”**: wtyczka ma inny token niż serwer. Uruchom `node install.mjs`
+  (odświeża `ui.html` w repo), zamknij okno wtyczki i otwórz je ponownie. Jeśli Figma ładuje wtyczkę z innej kopii
+  repo, instalator powie o tym na końcu.
+- **Figma: „Unable to load code … no such file or directory … ui.html”**: obok `manifest.json`, z którego Figma
+  ładuje wtyczkę, nie ma `ui.html`. Uruchom `node install.mjs` w tym repo: generuje ten plik. `node install.mjs
+  --verify` sprawdza, czy jest i czy jest aktualny.
 - **Brak narzędzi figma_* w Claude Code**: `claude mcp list` powinien pokazać `figma-bridge`. Jeśli go nie ma,
   uruchom `node install.mjs` i zacznij nową sesję.
 - **TCC i `~/Documents`**: instalator nie przyjmie `BRIDGE_HOME` w `~/Documents`, `~/Desktop`, `~/Downloads`,
@@ -422,7 +427,9 @@ w Settings → Security.
   `test/security.test.mjs` trzyma kontrakt bezpieczeństwa według nagłówków OWASP Top 10, a `test/ui.test.mjs`
   uruchamia skrypt okna wtyczki na prawdziwym serwerze.
 - Zmiany z repo trafiają do działającego mostu przez `node install.mjs`. Po zmianach w `code.js`,
-  `ui.template.html` albo `manifest.json` otwórz wtyczkę ponownie.
+  `ui.template.html` albo `manifest.json` otwórz wtyczkę ponownie. Figma czyta `code.js` prosto z repo, więc jego
+  zmiana działa już po ponownym otwarciu wtyczki; okno (`ui.html`) i serwer odświeża dopiero instalator, dlatego
+  po zmianie uruchamiaj go od razu. Testy puszczają instalator z kopii repo, żeby nie podmienić `ui.html`.
 - Bez zainstalowanego katalogu mostu `node server.mjs` w repo używa samego repo jako katalogu mostu (`data/`
   i `ui.html` są w `.gitignore`), a wtyczkę importuje się z `manifest.json` w repo. Gdy katalog mostu istnieje,
   skrypty uruchomione z repo korzystają z niego.

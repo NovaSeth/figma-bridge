@@ -1,5 +1,7 @@
 // Installs the bridge for this user (macOS): runtime copy in <home>/app, data in <home>/data, a LaunchAgent that
 // keeps server.mjs running, and the figma-bridge MCP server registered in Claude Code for all projects.
+// The plugin is imported into Figma from this checkout (manifest.json here): the installer writes its window,
+// ui.html, next to it, since the server in the background has no access to a checkout under ~/Documents.
 //   node install.mjs               install or update (idempotent)
 //   node install.mjs --verify      does <home>/app match this repo?
 //   node install.mjs --uninstall   LaunchAgent, MCP entry and app/ go; data/ and projects/ stay
@@ -75,18 +77,22 @@ export function compare(app, source = repo) {
     .concat(have.filter(p => !want.includes(p)).map(p => ({ path: p, problem: 'extra' })));
 }
 
-// Figma runs a development plugin from wherever its manifest was imported. Imported from a checkout instead of
-// app/, it keeps running that copy's code.js with a ui.html nobody refreshes, or one that is not there at all.
-// → the manifest paths of this plugin that Figma knows and that are not app/manifest.json
-export function importedElsewhere(app, home = homedir()) {
+// Figma runs a development plugin from wherever its manifest was imported: this checkout is the place (the
+// installer keeps its ui.html current), the installed copy in app/ works too. Imported from another copy, an old
+// clone say, Figma keeps running that copy's code.js with a ui.html nobody refreshes.
+// → { here: the manifests of this checkout or of app/ that Figma has, elsewhere: this plugin's other ones }
+export function figmaImports(app, home = homedir()) {
   let entries, id;
   try {
     entries = JSON.parse(readFileSync(join(home, 'Library', 'Application Support', 'Figma', 'settings.json'), 'utf8')).localFileExtensions;
     id = JSON.parse(readFileSync(join(repo, 'manifest.json'), 'utf8')).id;
-  } catch (e) { return []; }
-  const own = resolve(app, 'manifest.json');
-  return (Array.isArray(entries) ? entries : []).map(e => e && e.manifestPath).filter(p => typeof p === 'string' && resolve(p) !== own)
+  } catch (e) { return { here: [], elsewhere: [] }; }
+  // By where the file really is: Figma may know the checkout under another name (a link, /var for /private/var).
+  const real = p => { try { return realpathSync(p); } catch (e) { return resolve(p); } };
+  const own = [real(join(repo, 'manifest.json')), real(join(app, 'manifest.json'))];
+  const ours = (Array.isArray(entries) ? entries : []).map(e => e && e.manifestPath).filter(p => typeof p === 'string')
     .filter(p => { try { return JSON.parse(readFileSync(p, 'utf8')).id === id; } catch (e) { return false; } });
+  return { here: ours.filter(p => own.includes(real(p))), elsewhere: ours.filter(p => !own.includes(real(p))) };
 }
 
 async function main(argv) {
@@ -103,11 +109,15 @@ async function main(argv) {
   const bootout = label => mac && run('launchctl', ['bootout', `gui/${uid}/${label}`]);
   const claude = which('claude');
 
+  // The plugin window Figma loads: next to the manifest of this checkout, with the token of the installed bridge.
+  const checkoutUi = join(repo, 'ui.html');
   if (has('--verify')) {
     const diff = compare(app);
+    if (!existsSync(checkoutUi)) diff.push({ path: 'ui.html (w repo, obok manifest.json)', problem: 'missing' });
+    else if (!same(checkoutUi, join(app, 'ui.html'))) diff.push({ path: 'ui.html (w repo, obok manifest.json)', problem: 'changed' });
     if (!diff.length) { console.log('app/ zgodne z repo (' + runtimeFiles().length + ' plików): ' + app); return; }
     diff.forEach(d => console.log(d.problem.padEnd(8) + d.path));
-    console.log('app/ różni się od repo: node install.mjs aktualizuje.');
+    console.log('app/ albo okno wtyczki różni się od repo: node install.mjs aktualizuje.');
     process.exit(1);
   }
 
@@ -115,6 +125,7 @@ async function main(argv) {
     for (const label of [LABEL, ...LEGACY_LABELS]) { bootout(label); const f = join(agents, label + '.plist'); if (existsSync(f)) unlinkSync(f); }
     if (claude) run(claude, ['mcp', 'remove', '--scope', 'user', 'figma-bridge']);
     rmSync(app, { recursive: true, force: true });
+    rmSync(checkoutUi, { force: true }); // it carries the bridge token
     if (has('--purge')) rmSync(data, { recursive: true, force: true });
     try { rmdirSync(home); } catch (e) {} // only when nothing (no projects/) is left
     console.log('Odinstalowano: LaunchAgent, wpis MCP figma-bridge i app/.' + (has('--purge') ? ' Usunięto też data/.' : ' data/ zostaje (--purge usuwa).') + (existsSync(join(home, 'projects')) ? ' projects/ zostaje.' : ''));
@@ -139,6 +150,7 @@ chmurowych ani dysków zewnętrznych. Ustaw BRIDGE_HOME poza nimi albo pomiń go
   // 2. Data, token, the plugin window.
   for (const d of [data, logs, join(home, 'projects')]) mkdirSync(d, { recursive: true });
   writeUi(ensureToken(data), PORT, app, app);
+  writeUi(ensureToken(data), PORT, repo, repo);
 
   // 3. LaunchAgent: node and claude must be on its PATH, and claude needs HOME for its settings and login.
   const node = nodeBinary();
@@ -163,15 +175,17 @@ chmurowych ani dysków zewnętrznych. Ustaw BRIDGE_HOME poza nimi albo pomiń go
   } else console.log('Nie ma claude w PATH. Zarejestruj MCP sam: claude ' + mcpArgs.join(' '));
 
   const token = existsSync(join(data, 'figma-token.txt'));
+  const imports = figmaImports(app);
   console.log(`
 Gotowe (${home}). Kroki ręczne:
-1. Figma desktop → Plugins → Development → Import plugin from manifest… → ${join(app, 'manifest.json')}
+1. ${imports.here.length ? 'Wtyczka jest już zaimportowana w Figmie z ' + imports.here[0] + '. Po aktualizacji zamknij jej okno i otwórz ponownie.'
+    : 'Figma desktop → Plugins → Development → Import plugin from manifest… → ' + join(repo, 'manifest.json')}
 2. ${token ? 'Token Figmy już jest. Nowy: ' : ''}utwórz w Figmie token osobisty z zakresem File comments: read i write (file_comments:read, file_comments:write), skopiuj go i uruchom: sh "${join(app, 'add-token.sh')}"`);
-  for (const path of importedElsewhere(app)) console.log(`
+  for (const path of imports.elsewhere) console.log(`
 Uwaga: Figma ma tę wtyczkę zaimportowaną z ${path}
-i uruchamia kod z tamtego miejsca, nie z ${app}. Zaimportuj ją z manifestu podanego w kroku 1
-(Plugins → Development → Import plugin from manifest…; w oknie wyboru pliku Cmd+Shift+G pozwala wkleić ścieżkę),
-a tamtą usuń w Plugins → Development → Manage plugins in development.`);
+i uruchamia kod z tamtego miejsca, nie z tego repo. Zaimportuj ją z ${join(repo, 'manifest.json')}
+(Plugins → Development → Import plugin from manifest…), a tamtą usuń w Plugins → Development → Manage plugins
+in development.`);
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) await main(process.argv.slice(2));

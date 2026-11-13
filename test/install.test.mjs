@@ -3,7 +3,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { root } from './harness.mjs';
@@ -12,11 +12,14 @@ import { compare, isRuntimeFile, protectedFolder, LABEL } from '../install.mjs';
 const dirs = [];
 after(() => dirs.forEach(d => rmSync(d, { recursive: true, force: true })));
 
+// The installer also writes into the checkout it runs from (ui.html next to the manifest Figma imports), so it
+// runs from a copy of the checkout here: a test must not replace the plugin window of the real one.
 function sandbox() {
-  const dir = mkdtempSync(join(tmpdir(), 'bridge-install-'));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'bridge-install-'))); // the installer names real paths
   dirs.push(dir);
-  const bin = join(dir, 'bin'), home = join(dir, 'home'), log = join(dir, 'calls.log');
+  const bin = join(dir, 'bin'), home = join(dir, 'home'), log = join(dir, 'calls.log'), checkout = join(dir, 'checkout');
   mkdirSync(bin); mkdirSync(home);
+  cpSync(root, checkout, { recursive: true, filter: src => !/\/(\.git|node_modules|test|data|projects|out)$|\/ui\.html$/.test(src) });
   writeFileSync(join(dir, 'fake.cjs'), `require('fs').appendFileSync(process.env.FAKE_LOG, JSON.stringify(process.argv.slice(2)) + '\\n');
 if (process.argv[2] === 'pbpaste') process.stdout.write(process.env.FAKE_CLIPBOARD || '');`);
   for (const name of ['claude', 'launchctl', 'pbpaste', 'pbcopy']) {
@@ -24,11 +27,11 @@ if (process.argv[2] === 'pbpaste') process.stdout.write(process.env.FAKE_CLIPBOA
     chmodSync(join(bin, name), 0o755);
   }
   const env = { PATH: [bin, dirname(process.execPath), '/usr/bin', '/bin'].join(':'), HOME: home, BRIDGE_HOME: join(home, 'bridge'), FAKE_LOG: log };
-  const run = (file, args = [], extra = {}) => new Promise(ok => execFile(file === 'add-token.sh' ? '/bin/sh' : process.execPath, [join(root, file), ...args],
+  const run = (file, args = [], extra = {}) => new Promise(ok => execFile(file === 'add-token.sh' ? '/bin/sh' : process.execPath, [join(checkout, file), ...args],
     { env: { ...env, ...extra } }, (err, stdout, stderr) => ok({ code: err ? err.code : 0, stdout, stderr })));
   const calls = () => (existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : []);
   const clearCalls = () => rmSync(log, { force: true });
-  return { dir, bin, env, home, bridge: env.BRIDGE_HOME, app: join(env.BRIDGE_HOME, 'app'), data: join(env.BRIDGE_HOME, 'data'), plist: join(home, 'Library', 'LaunchAgents', LABEL + '.plist'), run, calls, clearCalls };
+  return { dir, bin, env, home, checkout, bridge: env.BRIDGE_HOME, app: join(env.BRIDGE_HOME, 'app'), data: join(env.BRIDGE_HOME, 'data'), plist: join(home, 'Library', 'LaunchAgents', LABEL + '.plist'), run, calls, clearCalls };
 }
 
 const uid = process.getuid();
@@ -75,7 +78,11 @@ test('install: runtime copy, data, token, ui.html, LaunchAgent, MCP for all proj
     ['claude', 'mcp', 'add', '--scope', 'user', 'figma-bridge', '--', 'node', join(s.app, 'mcp.mjs')],
   ]);
   assert.deepEqual(s.calls().filter(c => c[0] === 'launchctl'), [['launchctl', 'bootout', `gui/${uid}/${LABEL}`], ['launchctl', 'bootstrap', `gui/${uid}`, s.plist]]);
-  assert.ok(r.stdout.includes(join(s.app, 'manifest.json')), r.stdout);
+  // The plugin is imported from the project folder: its manifest is the one named, and the window next to it is
+  // the same as the installed one, private like it.
+  assert.ok(r.stdout.includes('Import plugin from manifest… → ' + join(s.checkout, 'manifest.json')), r.stdout);
+  assert.equal(readFileSync(join(s.checkout, 'ui.html'), 'utf8'), ui);
+  assert.equal(statSync(join(s.checkout, 'ui.html')).mode & 0o777, 0o600);
   assert.match(r.stdout, /file_comments:read, file_comments:write/);
   assert.ok(r.stdout.includes(join(s.app, 'add-token.sh')));
 });
@@ -104,12 +111,23 @@ test('--verify reports drift; --uninstall keeps data, --purge drops it, projects
   const drift = await s.run('install.mjs', ['--verify']);
   assert.equal(drift.code, 1);
   assert.match(drift.stdout, /changed +code\.js/);
+  // The plugin window in the checkout is part of what must match: Figma loads that one.
+  assert.equal((await s.run('install.mjs')).code, 0);
+  assert.equal((await s.run('install.mjs', ['--verify'])).code, 0);
+  rmSync(join(s.checkout, 'ui.html'));
+  const gone = await s.run('install.mjs', ['--verify']);
+  assert.deepEqual([gone.code, /missing +ui\.html \(w repo/.test(gone.stdout)], [1, true], gone.stdout);
+  writeFileSync(join(s.checkout, 'ui.html'), 'an old window');
+  assert.match((await s.run('install.mjs', ['--verify'])).stdout, /changed +ui\.html \(w repo/);
+  assert.equal((await s.run('install.mjs')).code, 0);
+  assert.equal((await s.run('install.mjs', ['--verify'])).code, 0);
 
   mkdirSync(join(s.bridge, 'projects', 'demo'), { recursive: true });
   writeFileSync(join(s.bridge, 'projects', 'demo', 'project.json'), '{"name":"demo"}');
   s.clearCalls();
   assert.equal((await s.run('install.mjs', ['--uninstall'])).code, 0);
   assert.ok(!existsSync(s.plist) && !existsSync(s.app));
+  assert.ok(!existsSync(join(s.checkout, 'ui.html')), 'the window in the checkout holds the bridge token: it goes too');
   assert.ok(existsSync(join(s.data, 'token.txt')));
   assert.deepEqual(s.calls().find(c => c[0] === 'claude'), ['claude', 'mcp', 'remove', '--scope', 'user', 'figma-bridge']);
   assert.ok(s.calls().some(c => c[0] === 'launchctl' && c[1] === 'bootout'));
@@ -161,7 +179,7 @@ test('add-token.sh saves the clipboard token to data/ privately, never prints it
   assert.match(wrong.stdout, /file_comments|File comments/);
 });
 
-test('install says so when Figma has the plugin imported from somewhere else than app/: Figma would keep running that copy', async () => {
+test('install says so when Figma has the plugin imported from another copy than this checkout: Figma would keep running that copy', async () => {
   const s = sandbox();
   const figma = join(s.home, 'Library', 'Application Support', 'Figma');
   mkdirSync(figma, { recursive: true });
@@ -169,15 +187,26 @@ test('install says so when Figma has the plugin imported from somewhere else tha
   // As Figma keeps them: the manifest of a checkout, another plugin, and stray files that were once picked.
   mkdirSync(join(s.dir, 'other'), { recursive: true });
   writeFileSync(join(s.dir, 'other', 'manifest.json'), JSON.stringify({ name: 'Something else', id: 'another-plugin' }));
-  settings([{ id: 3, manifestPath: join(root, 'manifest.json'), lastKnownName: 'Claude Bridge (localhost)' }, { id: 2, manifestPath: join(s.dir, 'other', 'manifest.json') },
-    { id: 4, manifestPath: join(root, 'code.js') }, { id: 5, manifestPath: join(s.dir, 'gone', 'manifest.json') }]);
+  // An older clone of the bridge somewhere else on the disk.
+  mkdirSync(join(s.dir, 'old-clone'));
+  writeFileSync(join(s.dir, 'old-clone', 'manifest.json'), readFileSync(join(root, 'manifest.json')));
+  settings([{ id: 3, manifestPath: join(s.dir, 'old-clone', 'manifest.json'), lastKnownName: 'Claude Bridge (localhost)' }, { id: 2, manifestPath: join(s.dir, 'other', 'manifest.json') },
+    { id: 4, manifestPath: join(s.checkout, 'code.js') }, { id: 5, manifestPath: join(s.dir, 'gone', 'manifest.json') }]);
   const elsewhere = await s.run('install.mjs');
   assert.equal(elsewhere.code, 0, elsewhere.stderr);
-  assert.match(elsewhere.stdout, new RegExp('Figma ma tę wtyczkę zaimportowaną z ' + join(root, 'manifest.json').replace(/[.\\/]/g, '\\$&')));
-  assert.ok(elsewhere.stdout.includes('Import plugin from manifest'), elsewhere.stdout);
+  assert.ok(elsewhere.stdout.includes('Figma ma tę wtyczkę zaimportowaną z ' + join(s.dir, 'old-clone', 'manifest.json')), elsewhere.stdout);
   assert.doesNotMatch(elsewhere.stdout, /other\/manifest\.json|gone\/manifest\.json/);
-  // Imported from app/, as the README says: nothing to warn about. A settings file that cannot be read is no error.
-  settings([{ id: 6, manifestPath: join(s.app, 'manifest.json') }]);
+  // Imported from this checkout, as the README says, or from the installed copy: nothing to warn about, and the
+  // installer says the import is done. A settings file that cannot be read is no error.
+  settings([{ id: 6, manifestPath: join(s.checkout, 'manifest.json') }]);
+  const here = await s.run('install.mjs');
+  assert.doesNotMatch(here.stdout, /Figma ma tę wtyczkę zaimportowaną z/);
+  assert.ok(here.stdout.includes('Wtyczka jest już zaimportowana w Figmie z ' + join(s.checkout, 'manifest.json')), here.stdout);
+  settings([{ id: 7, manifestPath: join(s.app, 'manifest.json') }]);
+  assert.doesNotMatch((await s.run('install.mjs')).stdout, /Figma ma tę wtyczkę zaimportowaną z/);
+  // The same checkout under another name (a link, /var for /private/var) is still this checkout.
+  symlinkSync(s.checkout, join(s.dir, 'alias'));
+  settings([{ id: 8, manifestPath: join(s.dir, 'alias', 'manifest.json') }]);
   assert.doesNotMatch((await s.run('install.mjs')).stdout, /Figma ma tę wtyczkę zaimportowaną z/);
   writeFileSync(join(figma, 'settings.json'), '{ broken');
   const broken = await s.run('install.mjs');
