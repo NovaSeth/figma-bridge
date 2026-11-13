@@ -246,7 +246,7 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
   // A job that names a file waits for a window of that file; any other goes to the current window.
   const handOut = () => {
     for (let i = 0; i < queue.length; i++) {
-      const { file: target, ...job } = queue[i];
+      const { file: target, ...job } = queue[i]; // timeoutMs goes along: the window stops showing a job nobody waits for
       const w = target ? [...windows.values()].find(x => x.poller && x.fileKey === target) : current();
       if (!w || !w.poller) continue;
       queue.splice(i--, 1);
@@ -280,7 +280,7 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
       done(null);
     }, limit);
     waiting.set(id, { timer, done });
-    queue.push({ id, code: String(code || ''), label: String(label || '').slice(0, 60), dryRun: !!dryRun, prelude: typeof prelude === 'string' ? prelude : '', file: target || null });
+    queue.push({ id, code: String(code || ''), label: String(label || '').slice(0, 60), dryRun: !!dryRun, prelude: typeof prelude === 'string' ? prelude : '', timeoutMs: limit, file: target || null });
     handOut();
     return id;
   };

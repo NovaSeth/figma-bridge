@@ -57,18 +57,35 @@ export async function startBridge(env) {
 }
 
 // The plugin window: its real script, with a DOM just big enough for render() and fetch pointed at 127.0.0.1.
-export function startUi(html, mock) {
+// intercept(url, init) may return a promise to answer a request itself (a failure, say); undefined lets it through.
+// → { stop, $: id → element, requests: ['GET /path', …] }
+export function startUi(html, mock, { intercept = () => undefined } = {}) {
   const script = html.slice(html.indexOf('<script>') + 8, html.lastIndexOf('</script>')).replace("'http://localhost:", "'http://127.0.0.1:");
-  const timers = new Set(), controller = new AbortController(), queued = [];
+  const timers = new Set(), controller = new AbortController(), queued = [], requests = [];
   let stopped = false;
-  const element = () => ({ style: {}, dataset: {}, children: [], className: '', textContent: '', onclick: null, remove() {},
-    classList: { add() {}, remove() {}, contains: () => false }, getBoundingClientRect: () => ({ height: 60 }), insertBefore(c) { this.children.push(c); } });
+  // Children, removal and class names behave as in a browser: the plan list is built and pruned through them.
+  const element = () => {
+    const el = { style: {}, dataset: {}, children: [], parent: null, className: '', textContent: '', onclick: null,
+      getBoundingClientRect: () => ({ height: 60 }),
+      remove() { if (el.parent) el.parent.children.splice(el.parent.children.indexOf(el), 1); el.parent = null; },
+      insertBefore(c, before) { c.remove(); c.parent = el; const i = before ? el.children.indexOf(before) : -1; if (i < 0) el.children.push(c); else el.children.splice(i, 0, c); },
+      classList: {
+        contains: name => el.className.split(/\s+/).includes(name),
+        add: name => { if (!el.classList.contains(name)) el.className = (el.className + ' ' + name).trim(); },
+        remove: name => { el.className = el.className.split(/\s+/).filter(c => c !== name).join(' '); },
+      } };
+    return el;
+  };
   const elements = new Map();
   const toPlugin = m => (mock.figma.ui.onmessage ? mock.figma.ui.onmessage(m) : queued.push(m));
   const ctx = vm.createContext({
     console, btoa,
     document: { getElementById: id => elements.get(id) || elements.set(id, element()).get(id), createElement: element },
-    fetch: (url, init) => (stopped ? new Promise(() => {}) : fetch(url, { ...init, signal: controller.signal })),
+    fetch: (url, init = {}) => {
+      if (stopped) return new Promise(() => {});
+      requests.push((init.method || 'GET') + ' ' + new URL(url).pathname + new URL(url).search);
+      return intercept(url, init) || fetch(url, { ...init, signal: controller.signal });
+    },
     setTimeout: (f, ms) => { if (stopped) return 0; const t = setTimeout(() => { timers.delete(t); f(); }, ms); timers.add(t); return t; },
     clearTimeout: t => { clearTimeout(t); timers.delete(t); },
     setInterval: (f, ms) => { if (stopped) return 0; const t = setInterval(f, ms); timers.add(t); return t; },
@@ -80,7 +97,7 @@ export function startUi(html, mock) {
   mock.state.listener = m => ctx.onmessage({ data: { pluginMessage: m } });
   loadPlugin(mock);
   queued.splice(0).forEach(toPlugin);
-  return { stop() { stopped = true; controller.abort(); for (const t of timers) { clearTimeout(t); clearInterval(t); } } };
+  return { requests, $: id => ctx.document.getElementById(id), stop() { stopped = true; controller.abort(); for (const t of timers) { clearTimeout(t); clearInterval(t); } } };
 }
 
 // A client for the bridge server's HTTP API.

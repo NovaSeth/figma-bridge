@@ -124,7 +124,18 @@
     const have = new Map([...ul.children].map(li => [li.dataset.key, li]));
     // A comment's entry carries the agent's status ("w toku", "zrobione", "nieudane") after its text.
     const label = t => t.text + (t.status ? ' · ' + t.status : ''), cls = t => t.state + (t.status === 'nieudane' ? ' failed' : '');
-    tasks.forEach((t, i) => { let li = have.get(t.text); if (!li) { li = document.createElement('li'); li.dataset.key = t.text; li.textContent = label(t); li.className = cls(t) + ' entering'; ul.insertBefore(li, ul.children[i] || null); requestAnimationFrame(() => requestAnimationFrame(() => li.classList.remove('entering'))); } else { li.className = cls(t); li.textContent = label(t); have.delete(t.text); } });
+    // The key is the text and which of its occurrences this is: two steps with the same text are two rows, and
+    // a row keyed by text alone was added again on every redraw.
+    const times = new Map();
+    tasks.forEach((t, i) => {
+      const n = times.get(t.text) || 0, key = n + ':' + t.text;
+      times.set(t.text, n + 1);
+      let li = have.get(key);
+      if (li) { have.delete(key); li.className = cls(t); li.textContent = label(t); return; }
+      li = document.createElement('li'); li.dataset.key = key; li.textContent = label(t); li.className = cls(t) + ' entering';
+      ul.insertBefore(li, ul.children[i] || null);
+      requestAnimationFrame(() => requestAnimationFrame(() => li.classList.remove('entering')));
+    });
     for (const li of have.values()) { if (li.classList.contains('leaving')) continue; li.classList.add('leaving'); setTimeout(() => { li.remove(); fit(); }, 480); }
     fit(); setTimeout(fit, 500);
   };
@@ -160,9 +171,15 @@
     if (m.type === 'progress') { jobProgress = Math.max(0, Math.min(1, m.value)); note = 'W toku: ' + Math.round(jobProgress * 100) + '%'; render(); return; }
     if (m.type !== 'result') return;
     const job = running.get(m.id) || { label: 'zadanie', t: Date.now() }; running.delete(m.id); jobProgress = null;
+    clearTimeout(job.watch);
     const images = (m.images || []).map(i => ({ name: i.name, b64: b64(i.bytes) }));
     try {
-      await fetch(BASE + '/result', { method: 'POST', headers: H, body: JSON.stringify({ id: m.id, ok: m.ok, result: m.result, error: m.error, images, dryRun: m.dryRun || null }) });
+      // The work is done in the file: a hiccup on the way back must not cost the caller its answer.
+      const body = JSON.stringify({ id: m.id, ok: m.ok, result: m.result, error: m.error, images, dryRun: m.dryRun || null });
+      for (let attempt = 1; ; attempt++) {
+        try { await fetch(BASE + '/result', { method: 'POST', headers: H, body }); break; }
+        catch (err) { if (attempt === 3) throw err; await sleep(400 * attempt); }
+      }
       note = (m.dryRun ? (m.ok ? 'Próba gotowa (' : 'Próba nieudana (') : (m.ok ? 'Krok gotowy (' : 'Krok nieudany (')) + secs(Date.now() - job.t) + ')';
       status = m.ok ? { kind: 'ok', text: 'Czekam na zadania' } : { kind: 'err', text: 'Ostatni krok nieudany' };
     } catch (err) { status = { kind: 'err', text: 'Nie odesłałem wyniku' }; note = err.message; }
@@ -170,14 +187,16 @@
     render();
   };
 
-  let byloSwieze = true;
+  let byloSwieze = true, asking = false;
   setInterval(async () => {
-    if (!listenBusy) try { showListen(await (await fetch(BASE + '/listen', { headers: H })).json()); } catch (err) {}
+    if (asking) return; // a slow answer must not stack requests
+    asking = true;
     try {
       if (!fileContext) return; // until the window knows its file it would show the plans of every file
-      const r = await (await fetch(BASE + '/plan?' + fileQuery(), { headers: H })).json();
+      const r = await (await fetch(BASE + '/window?' + fileQuery(), { headers: H })).json();
+      if (!listenBusy) showListen(r.listen);
       if (JSON.stringify(r.tasks) !== JSON.stringify(tasks)) { tasks = r.tasks; ostatniRuch = Date.now(); byloSwieze = true; render(); return; }
-    } catch (err) {}
+    } catch (err) {} finally { asking = false; }
     // Sama cisza też zmienia napis, więc odświeżam okno w chwili, gdy „Analizuję” ma zgasnąć.
     const swiezeTeraz = Date.now() - ostatniRuch < CISZA;
     if (swiezeTeraz !== byloSwieze) { byloSwieze = swiezeTeraz; render(); }
@@ -205,7 +224,15 @@
         }
         if (r.status === 200) {
           const job = await r.json(); job.label = job.label || 'zadanie';
-          running.set(job.id, { label: job.label, t: Date.now() }); jobProgress = null; ostatniRuch = Date.now();
+          // Past its time limit the server no longer waits for the job. The script may still run (it cannot be
+          // stopped), but "Pracuję" would then stay for ever.
+          const watch = job.timeoutMs ? setTimeout(() => {
+            if (!running.delete(job.id)) return;
+            status = { kind: 'err', text: 'Krok przekroczył czas' }; note = 'Skrypt mógł nie skończyć: ' + job.label;
+            if (!running.size) stopClock();
+            render();
+          }, job.timeoutMs + 1000) : null;
+          running.set(job.id, { label: job.label, t: Date.now(), watch }); jobProgress = null; ostatniRuch = Date.now();
           note = running.size > 1 ? running.size + ' kroki w toku' : job.dryRun ? 'Próba w toku (bez zapisu)' : 'Krok w toku'; startClock(); render();
           parent.postMessage({ pluginMessage: { type: 'job', id: job.id, code: job.code, prelude: job.prelude || '', dryRun: !!job.dryRun } }, '*');
         } else if (r.status === 204) { if (!running.size) { status = { kind: 'ok', text: 'Czekam na zadania' }; render(); } }
