@@ -214,5 +214,8 @@ comments    #12 id=<id> [reply-to=<root id>] @author [node=<id>] [file=<key> whe
   the id `''`.
 - A job with `file` goes to a window of that file only. MCP tools and `run.mjs` read `/status` first and send
   the job to the file it named. A job a window took and closed with is answered with an error within seconds.
+- Comments are read within a budget of requests per minute for all files together (3; Figma allows 5 on the
+  Starter plan), the file that waited longest first; a reply is paid from the same budget and never held back.
+  A new comment therefore shows up after about 20 s with one file, later with several.
 - State lives in `<home>/data`: `plan.json`, `events.jsonl`, `seen-comments.json`, `state.json`. Each is read
   tolerantly on start: a file cut off by a crash must not stop the server.

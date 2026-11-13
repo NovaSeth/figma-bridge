@@ -12,4 +12,4 @@ case "$T" in figd_*) ;; *) echo "W schowku nie ma tokenu Figmy (zaczyna się od 
 mkdir -p "$DATA" || exit 1
 umask 077; printf '%s' "$T" > "$DATA/$FILE"
 printf '' | pbcopy
-echo "Zapisano w $DATA/$FILE. Schowek wyczyszczony. Serwer zacznie czytać komentarze w ciągu 15 s."
+echo "Zapisano w $DATA/$FILE. Schowek wyczyszczony. Serwer zacznie czytać komentarze w ciągu pół minuty."

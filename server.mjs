@@ -42,7 +42,10 @@ const excerpt = text => String(text).replace(/\s+/g, ' ').slice(0, 70);
 const stamped = (...a) => console.log(new Date().toISOString(), ...a);
 
 // options are for tests: port 0 picks a free one, figmaFetch replaces the REST client, agent the comment agent.
-export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs = 40000, goneMs = 10000, sweepMs = 1000, activeMs = 30 * 60e3, clockSlackMs = 10e3,
+// commentsPerMinute: Figma allows a user 5 comment requests a minute on the Starter plan (25 and more on paid
+// ones), over all files together; 3 leaves room for replies. BRIDGE_COMMENTS_PER_MINUTE raises it.
+export function startServer({ port = defaultPort(), commentsPerMinute = Number(process.env.BRIDGE_COMMENTS_PER_MINUTE) || 3, budgetWindowMs = 60e3,
+  pollMs = Math.max(2000, Math.round(60e3 / commentsPerMinute)), connectedMs = 40000, goneMs = 10000, sweepMs = 1000, activeMs = 30 * 60e3, clockSlackMs = 10e3,
   headersAfterMs = 240e3, beatMs = 60e3, backoffMs = 60e3, log = stamped, figmaApi = process.env.BRIDGE_FIGMA_API || 'https://api.figma.com', figmaFetch = (...a) => fetch(...a), agent: agentOverride = null, agentOptions = {} } = {}) {
   const data = dataDir(), file = name => join(data, name);
   mkdirSync(file('out'), { recursive: true });
@@ -156,6 +159,11 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
   const tokenFor = new Map(); // file key → the token file that reached it
   const seen = readJson(seenFile, {});
   let commentsError = null, commentsCheckedAt = null, inFlight = null;
+  // The request budget: when the comment requests of the last minute were made (reads and replies), when each
+  // file was read last (the one that waited longest goes first), and what went wrong with a file last time.
+  const spent = [], polledAt = new Map(), problems = new Map();
+  const spend = () => { spent.push(Date.now()); };
+  const left = () => { while (spent.length && Date.now() - spent[0] >= budgetWindowMs) spent.shift(); return commentsPerMinute - spent.length; };
   // A rate-limited file is left alone for a while (Retry-After when Figma sends one, else a minute, doubling up
   // to an hour): asking every 15 s only keeps the limit in force.
   const paused = new Map(); // file key → { until, step, error }
@@ -189,6 +197,7 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
   async function postReply(fileKey, commentId, text) {
     if (!tokenFiles().length) return { ok: false, error: 'no figma-token.txt (run add-token.sh)' };
     try {
+      spend(); // a reply is never held back, but the polling makes room for it
       const r = await figmaRest(fileKey, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text, comment_id: commentId }) });
       if (!r) return { ok: false, error: 'figma-token.txt is empty (run add-token.sh)' };
       if (!r.ok) return { ok: false, error: httpError(r.status) };
@@ -215,17 +224,21 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
     try { keys = listProjects().flatMap(p => p.config.files || []); } catch (e) { projectsError = e.message; }
     keys = new Set(keys);
     for (const [key, at] of recentFiles) { if (Date.now() - at < activeMs) keys.add(key); else recentFiles.delete(key); }
-    const errors = [];
-    let news = false;
-    for (const key of keys) {
+    for (const key of problems.keys()) if (!keys.has(key)) problems.delete(key);
+    // Within the budget, the file that waited longest first; among equals one with a plugin window open.
+    const order = [...keys].sort((a, b) => (polledAt.get(a) || 0) - (polledAt.get(b) || 0) || fileLive(b) - fileLive(a));
+    let news = false, noToken = false;
+    for (const key of order) {
       const wait = paused.get(key);
-      if (wait && Date.now() < wait.until) { errors.push(wait.error); continue; }
+      if (wait && Date.now() < wait.until) continue;
+      if (left() <= 0) break;
+      spend(); polledAt.set(key, Date.now());
       try {
         const r = await figmaRest(key);
-        if (!r) { errors.push('figma-token.txt jest pusty'); break; }
-        if (r.status === 429) { errors.push(pause(key, r)); continue; }
-        if (!r.ok) { errors.push(key + ': ' + httpError(r.status)); continue; }
-        paused.delete(key);
+        if (!r) { noToken = true; break; }
+        if (r.status === 429) { problems.set(key, pause(key, r)); continue; }
+        if (!r.ok) { problems.set(key, key + ': ' + httpError(r.status)); continue; }
+        paused.delete(key); problems.delete(key);
         const list = (await r.json()).comments || [], first = !seen[key];
         seen[key] = seen[key] || {};
         const fresh = list.filter(c => !seen[key][c.id]).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
@@ -254,11 +267,11 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
         }
         if (dirty) savePlan();
         commentsCheckedAt = Date.now();
-      } catch (e) { errors.push(key + ': ' + String(e.message || e)); }
+      } catch (e) { problems.set(key, key + ': ' + String(e.message || e)); }
     }
     if (news) writeFileSync(seenFile, JSON.stringify(seen)); // not on every poll: most find nothing new
-    // One file that fails must not be hidden by the next one that works.
-    commentsError = errors[0] || projectsError || null;
+    // One file that fails must not be hidden by another that works, in this pass or a later one.
+    commentsError = (noToken ? 'figma-token.txt jest pusty' : [...keys].map(k => problems.get(k)).find(Boolean)) || projectsError || null;
   }
 
   const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'X-Bridge-Token, Content-Type', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' };

@@ -134,7 +134,7 @@ przekroczył czas”, a skrypt, którego wtyczka nie skończyła, działa dalej,
 1. Otwórz wtyczkę w pliku i włącz „Claude słucha komentarzy”. Pod przełącznikiem widać stan: „Słucham nowych
    komentarzy”, „Claude pracuje nad #N” albo przeszkodę, np. brak tokenu Figmy.
 2. Napisz w Figmie nowy komentarz, najlepiej przypięty do warstwy.
-3. Serwer sprawdza komentarze co 15 s. Claude dostaje treść komentarza i zarys przypiętej warstwy, pracuje narzędziami
+3. Serwer sprawdza komentarze mniej więcej co 20 s. Claude dostaje treść komentarza i zarys przypiętej warstwy, pracuje narzędziami
    figma-bridge i odpowiada w wątku: „Claude: *co zrobił*. Sprawdź i zamknij wątek, jeśli się zgadza.”
 4. Sprawdzasz zmianę i zamykasz wątek (Resolve). Wpis znika wtedy z planu w oknie wtyczki.
 
@@ -170,6 +170,12 @@ sesja Claude Code. Jeśli sesja się nie uda albo przekroczy czas, Claude nie od
 | czas jednej sesji | 15 min | `BRIDGE_AGENT_TIMEOUT_MS` |
 | koszt jednej sesji (`--max-budget-usd`) | 5 USD | `BRIDGE_AGENT_BUDGET_USD` |
 | równoległość | jedna sesja naraz, reszta czeka w kolejce | — |
+| zapytania do Figmy o komentarze, łącznie dla wszystkich plików | 3 na minutę | `BRIDGE_COMMENTS_PER_MINUTE` |
+
+Figma pozwala jednemu użytkownikowi na 5 zapytań o komentarze na minutę na planie Starter (na płatnych planach 25
+i więcej dla miejsc Dev i Full), licząc wszystkie pliki razem. Serwer mieści się w 3, żeby zostało miejsce na
+odpowiedzi w wątkach: przy jednym pliku pyta co 20 s, przy kilku pliki są odpytywane na zmianę, zaczynając od
+tego, który czekał najdłużej. Na płatnym planie możesz podnieść limit, np. `BRIDGE_COMMENTS_PER_MINUTE=12`.
 
 Zmienne czyta serwer. Dopisz je do `EnvironmentVariables` w `~/Library/LaunchAgents/local.claude-figma-bridge.plist`,
 a potem wykonaj `launchctl bootout gui/$(id -u)/local.claude-figma-bridge` i `launchctl bootstrap gui/$(id -u)`
@@ -407,10 +413,12 @@ w Settings → Security.
   sięga tego pliku. Utwórz token z zakresem File comments z odczytem i zapisem, na koncie z dostępem do pliku
   (drugie konto: `add-token.sh <nazwa>`). Token tylko z odczytem czyta komentarze, ale odpowiedzi w wątkach się
   nie udają. Jeśli to plik z `files` projektu, do którego nie masz już dostępu, usuń go z tej listy.
-- **`HTTP 429 (limit zapytań, przerwa do GG:MM)`**: serwer co 15 s pyta o komentarze plików, w których wtyczka
-  działała w ostatnich 30 minutach, i wszystkich plików z `files` w projektach, więc ogranicz tę listę. Po 429
-  zostawia plik w spokoju na czas podany przez Figmę (`Retry-After`), a bez niego na minutę, potem dwie, cztery,
-  najwyżej godzinę.
+- **`HTTP 429 (limit zapytań, przerwa do GG:MM)`**: Figma odrzuciła zapytanie o komentarze. Serwer trzyma się
+  3 zapytań na minutę, więc zdarza się to głównie wtedy, gdy z tego samego konta Figmy korzysta jeszcze coś innego
+  (inny skrypt, inny komputer) albo tuż po kilku restartach serwera. Po 429 serwer zostawia plik w spokoju na czas
+  podany przez Figmę (`Retry-After`), a bez niego na minutę, potem dwie, cztery, najwyżej godzinę. Im więcej plików
+  (te z otwartą wtyczką w ostatnich 30 minutach i wszystkie z `files` w projektach), tym rzadziej każdy jest
+  sprawdzany, więc ogranicz listę `files` do plików, których komentarze są Ci potrzebne.
 - **Okno wtyczki: „Krok przekroczył czas”**: skrypt nie odesłał wyniku w swoim `timeoutMs`. Jeśli Figma nie
   reaguje, skrypt wciąż liczy: dodaj w jego pętlach `await breathe()` albo daj mu więcej czasu.
 - **`figma_status` pokazuje `link: …`**: `.figma-bridge.json` z tego repo nie został połączony. Linia mówi
@@ -435,7 +443,8 @@ w Settings → Security.
   skrypty uruchomione z repo korzystają z niego.
 - Zmienne środowiskowe: `BRIDGE_HOME` (katalog mostu), `FIGMA_FILE` (plik sesji MCP, `run.mjs` i `plan.mjs`),
   `BRIDGE_FILE_ROOT` (jedyny folder, z którego MCP bierze skrypty; ustawia go tryb komentarzy),
-  `BRIDGE_AGENT_*` (limity trybu komentarzy), `BRIDGE_NO_AUTOSTART=1` (MCP nigdy nie uruchamia serwera sam).
+  `BRIDGE_AGENT_*` i `BRIDGE_COMMENTS_PER_MINUTE` (limity trybu komentarzy), `BRIDGE_NO_AUTOSTART=1` (MCP nigdy
+  nie uruchamia serwera sam).
   Tylko do testów: `BRIDGE_PORT` (manifest pozwala wyłącznie na 8765) i `BRIDGE_FIGMA_API`.
 - Poprawka albo nowa funkcja zaczyna się od testu, który pada z właściwego powodu. Endpointy serwera i model
   okien wtyczki opisuje [AGENTS.md](AGENTS.md).

@@ -75,7 +75,8 @@ function plugin(base, token, answer = () => 'OUTLINE', { win = null, file = 'FIL
 
 async function start(options) {
   const rest = figmaRest();
-  const s = await startServer({ port: 0, pollMs: 1e6, connectedMs: 300, clockSlackMs: 0, figmaFetch: rest.fetch, ...options });
+  // commentsPerMinute: these tests poll by hand, many times a second; the budget has tests of its own below.
+  const s = await startServer({ port: 0, pollMs: 1e6, connectedMs: 300, clockSlackMs: 0, commentsPerMinute: 1e6, figmaFetch: rest.fetch, ...options });
   cleanups.push(s.close);
   const base = 'http://127.0.0.1:' + s.port;
   const api = async (path, body) => {
@@ -775,4 +776,44 @@ test('a window that took a job and then closed: the job is answered within secon
   await sleep(1200);
   await fetch(base + '/result', { method: 'POST', headers: H, body: JSON.stringify({ id: job.id, ok: true, result: 'done late' }) });
   assert.equal((await slow).body.result, 'done late');
+});
+
+// ---- Figma's request budget (5 comment requests a minute per user on the Starter plan)
+
+test('comment polling stays inside a budget of requests per minute; with more files than budget they take turns', async () => {
+  home(); // its project lists OTHER
+  const { s, rest, base } = await start({ agent: recordingAgent(), commentsPerMinute: 2, budgetWindowMs: 400 });
+  await twoWindows(s, base); // FILE and SECOND have a plugin window; the poll their hellos schedule comes later
+  await s.pollComments();
+  assert.deepEqual([...rest.gets].sort(), ['FILE', 'SECOND'], 'two requests: the files with a window open come first');
+  await s.pollComments();
+  await s.pollComments();
+  assert.equal(rest.gets.length, 2, 'the budget of this minute is spent: asking more only earns a 429');
+  await sleep(450);
+  await s.pollComments();
+  assert.deepEqual(rest.gets.slice(2), ['OTHER', rest.gets[0]], 'next minute: the file that waited longest, then the one polled first');
+});
+
+test('a reply in a thread is paid from the same budget', async () => {
+  home();
+  const { s, rest, base, api } = await start({ agent: recordingAgent(), commentsPerMinute: 2, budgetWindowMs: 400 });
+  plugin(base, s.token, () => 1, { win: 'w1' });
+  await sleep(900); // past the poll the window's hello schedules, and past the minute it was paid from
+  rest.gets.length = 0;
+  assert.equal((await api('/comments/reply', { fileKey: 'FILE', commentId: 'c1', text: 'Done.' })).status, 200);
+  await s.pollComments();
+  assert.equal(rest.gets.length, 1, 'one request left this minute after the reply');
+});
+
+test('a file that failed keeps its error in the status while other files take their turn', async () => {
+  home();
+  const { s, rest, base, api } = await start({ agent: recordingAgent(), commentsPerMinute: 1, budgetWindowMs: 300 });
+  rest.access.OTHER = 'figd_nobody'; // no token reaches the project's file
+  plugin(base, s.token, () => 1, { win: 'w1' });
+  await sleep(700); // FILE, then OTHER, one a "minute"
+  await s.pollComments();
+  await sleep(350);
+  await s.pollComments();
+  assert.ok(rest.gets.includes('FILE'));
+  assert.match((await api('/status')).body.comments, /^błąd: OTHER: HTTP 403/, 'not "działa" just because the last file polled was fine');
 });

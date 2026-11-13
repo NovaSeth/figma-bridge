@@ -52,7 +52,7 @@ before(async () => {
     res.end(JSON.stringify({ comments: [] }));
   });
   await new Promise(ok => figmaApi.listen(0, '127.0.0.1', ok));
-  env = { ...process.env, BRIDGE_HOME: home, BRIDGE_PORT: String(await freePort()), BRIDGE_FIGMA_API: 'http://127.0.0.1:' + figmaApi.address().port };
+  env = { ...process.env, BRIDGE_HOME: home, BRIDGE_PORT: String(await freePort()), BRIDGE_FIGMA_API: 'http://127.0.0.1:' + figmaApi.address().port, BRIDGE_COMMENTS_PER_MINUTE: '1000' };
   bridge = await startBridge(env);
   token = readFileSync(join(home, 'data', 'token.txt'), 'utf8').trim();
   api = bridgeApi(env.BRIDGE_PORT, token);
