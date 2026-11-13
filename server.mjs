@@ -25,13 +25,20 @@ export function writeUi(token, port, dir = appDir(), templateDir = existsSync(jo
   chmodSync(file, 0o600);
 }
 
-const readJson = (file, fallback) => { try { return JSON.parse(readFileSync(file, 'utf8')); } catch (e) { return fallback; } };
+// State files are read on start. One that is missing, cut off by a crash or of the wrong shape gives the
+// fallback: the server must come up, since launchd would only restart it into the same file again.
+const readJson = (file, fallback) => {
+  try { const v = JSON.parse(readFileSync(file, 'utf8')); return v && typeof v === 'object' && Array.isArray(v) === Array.isArray(fallback) ? v : fallback; }
+  catch (e) { return fallback; }
+};
+const readLines = file => { try { return readFileSync(file, 'utf8').split('\n').flatMap(l => { try { const v = JSON.parse(l); return v && typeof v === 'object' ? [v] : []; } catch (e) { return []; } }); } catch (e) { return []; } };
+const STATES = ['todo', 'active', 'done'];
 const excerpt = text => String(text).replace(/\s+/g, ' ').slice(0, 70);
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
 // options are for tests: port 0 picks a free one, figmaFetch replaces the REST client, agent the comment agent.
 export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs = 40000, goneMs = 5000, activeMs = 30 * 60e3, clockSlackMs = 10e3,
-  figmaApi = process.env.BRIDGE_FIGMA_API || 'https://api.figma.com', figmaFetch = (...a) => fetch(...a), agent: agentOverride = null, agentOptions = {} } = {}) {
+  headersAfterMs = 240e3, beatMs = 60e3, backoffMs = 60e3, figmaApi = process.env.BRIDGE_FIGMA_API || 'https://api.figma.com', figmaFetch = (...a) => fetch(...a), agent: agentOverride = null, agentOptions = {} } = {}) {
   const data = dataDir(), file = name => join(data, name);
   mkdirSync(file('out'), { recursive: true });
   const TOKEN = ensureToken(data);
@@ -63,8 +70,9 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
   // Nobody may be waiting, so they do not pile up for ever: after 3 days an event is stale (its thread is in the
   // plan anyway), and the 200 newest stay, one per comment.
   const EVENTS_TTL = 3 * 24 * 3600e3, EVENTS_MAX = 200;
-  let events = existsSync(file('events.jsonl')) ? readFileSync(file('events.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : [];
-  let eventWaiter = null;
+  let events = readLines(file('events.jsonl'));
+  // Everyone waiting on /events (wait.mjs, more than one session): the first in line gets what comes.
+  const eventWaiters = [];
   const pruneEvents = () => {
     const now = Date.now(), ids = new Set(), n = events.length;
     events = events.filter(e => !(now - Date.parse(e.at) >= EVENTS_TTL) && !(e.id && ids.has(e.id)) && (ids.add(e.id), true)).slice(-EVENTS_MAX);
@@ -72,15 +80,20 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
   };
   const saveEvents = () => { pruneEvents(); writeFileSync(file('events.jsonl'), events.map(e => JSON.stringify(e)).join('\n') + (events.length ? '\n' : '')); };
   if (pruneEvents()) saveEvents();
-  const deliver = () => { if (eventWaiter && events.length) { const { res, timer } = eventWaiter; eventWaiter = null; clearTimeout(timer); const out = events; events = []; saveEvents(); send(res, 200, out); } };
+  const deliver = () => { if (eventWaiters.length && events.length) { const { res, timer } = eventWaiters.shift(); clearTimeout(timer); const out = events; events = []; saveEvents(); send(res, 200, out); } };
   const pushEvent = e => { if (e.id && events.some(x => x.id === e.id)) return; events.push({ at: new Date().toISOString(), ...e }); saveEvents(); deliver(); };
 
   // Plan shown in the plugin window: [{ text, state: 'done'|'active'|'todo', status?, commentId?, number?, fileKey? }].
   // It is kept per Figma file: an entry carries the fileKey of the file it belongs to and shows only in that
   // file's window; an entry without one (set while no file was known) shows in every window.
   // Done steps leave after 10 s; a comment's entry stays until its thread is resolved in Figma.
-  let plan = readJson(file('plan.json'), []);
+  // What a client sends becomes an entry with a text and a known state: a bare string or a stray state would
+  // break every later mark.
+  const entry = t => (t && typeof t === 'object' ? { ...t, text: String(t.text == null ? '' : t.text), state: STATES.includes(t.state) ? t.state : 'todo' } : { text: String(t), state: 'todo' });
+  let plan = readJson(file('plan.json'), []).map(entry);
   plan = plan.filter((t, i) => !t.commentId || plan.findIndex(x => x.commentId === t.commentId) === i); // one entry per thread
+  // "#12" is thread 12 and nothing else ("#1" must not tick off #10 to #19); any other mark is the start of a text.
+  const marked = mark => { const n = /^#(\d+)$/.exec(mark); return t => (n && t.commentId ? String(t.number) === n[1] : t.text.startsWith(mark) && !(n && /\d/.test(t.text.charAt(mark.length)))); };
   const forFile = key => plan.filter(t => !t.fileKey || t.fileKey === key);
   const DONE_TTL = 10 * 1000;
   const expiring = t => t.state === 'done' && (!t.commentId || t.resolved);
@@ -121,6 +134,17 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
   const tokenFor = new Map(); // file key → the token file that reached it
   const seen = readJson(seenFile, {});
   let commentsError = null, commentsCheckedAt = null, inFlight = null;
+  // A rate-limited file is left alone for a while (Retry-After when Figma sends one, else a minute, doubling up
+  // to an hour): asking every 15 s only keeps the limit in force.
+  const paused = new Map(); // file key → { until, step, error }
+  const pause = (key, r) => {
+    const asked = Number(r.headers && typeof r.headers.get === 'function' && r.headers.get('retry-after')) * 1000;
+    const step = Math.min(3600e3, paused.has(key) ? paused.get(key).step * 2 : backoffMs);
+    const until = Date.now() + Math.min(3600e3, asked > 0 ? asked : step);
+    const error = key + ': HTTP 429 (limit zapytań, przerwa do ' + new Date(until).toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }) + ')';
+    paused.set(key, { until, step, error });
+    return error;
+  };
   const REST_TIMEOUT = 20000;
   const commentsState = () => !tokenFiles().length ? 'wyłączone (brak figma-token.txt)' : commentsError ? 'błąd: ' + commentsError : commentsCheckedAt ? 'działa' : 'startuje';
   const httpError = status => 'HTTP ' + status + (status === 403 || status === 404 ? ' (token bez zakresu file_comments albo bez dostępu do pliku)' : status === 429 ? ' (limit zapytań)' : '');
@@ -171,14 +195,20 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
     keys = new Set(keys);
     for (const [key, at] of recentFiles) { if (Date.now() - at < activeMs) keys.add(key); else recentFiles.delete(key); }
     const errors = [];
+    let news = false;
     for (const key of keys) {
+      const wait = paused.get(key);
+      if (wait && Date.now() < wait.until) { errors.push(wait.error); continue; }
       try {
         const r = await figmaRest(key);
         if (!r) { errors.push('figma-token.txt jest pusty'); break; }
+        if (r.status === 429) { errors.push(pause(key, r)); continue; }
         if (!r.ok) { errors.push(key + ': ' + httpError(r.status)); continue; }
+        paused.delete(key);
         const list = (await r.json()).comments || [], first = !seen[key];
         seen[key] = seen[key] || {};
         const fresh = list.filter(c => !seen[key][c.id]).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+        if (first || fresh.length) news = true;
         for (const c of fresh) {
           seen[key][c.id] = 1;
           if (c.resolved_at) continue;
@@ -205,7 +235,7 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
         commentsCheckedAt = Date.now();
       } catch (e) { errors.push(key + ': ' + String(e.message || e)); }
     }
-    writeFileSync(seenFile, JSON.stringify(seen));
+    if (news) writeFileSync(seenFile, JSON.stringify(seen)); // not on every poll: most find nothing new
     // One file that fails must not be hidden by the next one that works.
     commentsError = errors[0] || projectsError || null;
   }
@@ -241,15 +271,25 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
   // One queue for jobs from run.mjs/mcp.mjs (HTTP) and from the agent (in process). done(null) = timeout.
   const addJob = ({ code, label = '', dryRun = false, prelude = '', timeoutMs = 120000, file: target = null }, done) => {
     const id = 'j' + (++seq) + '-' + Date.now();
+    // A timer holds 31 bits of milliseconds; given more, Node fires it at once.
+    const limit = Math.min(Math.max(Number(timeoutMs) || 120000, 1), 2 ** 31 - 1);
     const timer = setTimeout(() => {
       if (!waiting.delete(id)) return;
       const i = queue.findIndex(j => j.id === id);
       if (i >= 0) queue.splice(i, 1); // never picked up: a late plugin must not run a job nobody waits for
       done(null);
-    }, timeoutMs || 120000);
+    }, limit);
     waiting.set(id, { timer, done });
     queue.push({ id, code: String(code || ''), label: String(label || '').slice(0, 60), dryRun: !!dryRun, prelude: typeof prelude === 'string' ? prelude : '', file: target || null });
     handOut();
+    return id;
+  };
+  // Whoever asked for the job is gone (a cancelled tool call, Ctrl-C on run.mjs): while still queued it is dropped.
+  // One the plugin already runs cannot be stopped.
+  const dropQueued = id => {
+    const i = queue.findIndex(j => j.id === id), w = waiting.get(id);
+    if (i < 0 || !w) return;
+    queue.splice(i, 1); clearTimeout(w.timer); waiting.delete(id);
   };
   const runJob = job => new Promise(ok => addJob(job, out => ok(out || { ok: false, error: 'timeout' })));
 
@@ -316,7 +356,18 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
         // file: only the window of that Figma file runs the job (the plugin may be open in several files).
         const f = m.file ? resolveFile(String(m.file)) : { key: null };
         if (f.error) return send(res, 400, { ok: false, error: f.error });
-        return addJob({ ...m, file: f.key }, out => out ? send(res, 200, out) : send(res, 504, { ok: false, error: 'timeout: wtyczka nie odesłała wyniku (czy okno Claude Bridge jest otwarte' + (f.key ? ' w pliku ' + (fileName(f.key) || f.key) : '') + '?)' }));
+        // fetch() gives up on an answer whose headers, or next piece of body, take 5 minutes, while the job runs
+        // on. A long job gets its headers after 4 and a space every minute: JSON may start with whitespace, so
+        // the client reads the same answer, only always as 200 (it tells by `ok`).
+        let beat = null;
+        const early = setTimeout(() => {
+          res.writeHead(200, { ...cors, 'Content-Type': 'application/json' }); res.write(' ');
+          beat = setInterval(() => res.write(' '), beatMs);
+        }, headersAfterMs);
+        const answer = (code, body) => { clearTimeout(early); clearInterval(beat); if (res.headersSent) res.end(JSON.stringify(body)); else send(res, code, body); };
+        const id = addJob({ ...m, file: f.key }, out => (out ? answer(200, out) : answer(504, { ok: false, error: 'timeout: wtyczka nie odesłała wyniku (czy okno Claude Bridge jest otwarte' + (f.key ? ' w pliku ' + (fileName(f.key) || f.key) : '') + '?)' })));
+        res.on('close', () => { clearTimeout(early); clearInterval(beat); if (!res.writableFinished) dropQueued(id); });
+        return undefined;
       }
       if (req.method === 'POST' && path === '/hello') {
         const m = await readBody(req), w = windowOf(String(m.win || '')), key = m.fileKey || null;
@@ -341,16 +392,22 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
           const f = m.file ? resolveFile(String(m.file)) : { key: pluginFile().fileKey };
           if (f.error) return send(res, 400, { error: f.error });
           const key = f.key, mine = t => !t.fileKey || t.fileKey === key, own = t => (key ? { ...t, fileKey: key } : t);
+          const state = fallback => (STATES.includes(m.state) ? m.state : fallback);
           // A new plan keeps the file's comment entries whose threads are still open.
-          if (m.tasks) plan = plan.filter(t => !mine(t)).concat(m.tasks.map(own), plan.filter(t => mine(t) && t.commentId && !t.resolved && m.keepComments !== false && !m.tasks.some(x => x.commentId === t.commentId)));
-          if (m.add) plan.push(own({ text: String(m.add), state: m.state || 'active' }));
-          if (m.mark) for (const t of plan) if (mine(t) && (t.text.startsWith(m.mark) || (t.commentId && ('#' + t.number) === m.mark))) t.state = m.state || 'done';
+          if (m.tasks != null) {
+            const tasks = [].concat(m.tasks).map(entry);
+            plan = plan.filter(t => !mine(t)).concat(tasks.map(own), plan.filter(t => mine(t) && t.commentId && !t.resolved && m.keepComments !== false && !tasks.some(x => x.commentId === t.commentId)));
+          }
+          if (m.add) plan.push(own({ text: String(m.add), state: state('active') }));
+          if (m.mark) { const hit = marked(String(m.mark)); for (const t of plan) if (mine(t) && hit(t)) t.state = state('done'); }
           if (m.clearDone) plan = plan.filter(t => !(mine(t) && t.state === 'done'));
           savePlan();
           return send(res, 200, key ? { file: key, fileName: fileName(key), tasks: forFile(key) } : { tasks: forFile(null) });
         }
         return send(res, 200, { tasks: query.has('file') ? forFile(query.get('file') || null) : plan });
       }
+      // What a plugin window shows, in one answer: it asks every 2 s.
+      if (req.method === 'GET' && path === '/window') return send(res, 200, { tasks: forFile(query.get('file') || null), listen: listenInfo() });
       if (req.method === 'POST' && path === '/comments/reply') {
         const m = await readBody(req);
         if (!m.fileKey || !m.commentId || !m.text) return send(res, 400, { ok: false, error: 'fileKey, commentId and text are required' });
@@ -358,9 +415,12 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
         return send(res, r.ok ? 200 : 502, r);
       }
       if (req.method === 'GET' && path === '/events') {
-        if (eventWaiter) { clearTimeout(eventWaiter.timer); send(eventWaiter.res, 204); }
-        eventWaiter = { res, timer: setTimeout(() => { if (eventWaiter && eventWaiter.res === res) { eventWaiter = null; send(res, 204); } }, 25000) };
-        req.on('close', () => { if (eventWaiter && eventWaiter.res === res) { clearTimeout(eventWaiter.timer); eventWaiter = null; } });
+        // Waiters queue up. Answering the earlier one to make room would send two of them (each asks again at
+        // once) round in a loop.
+        const waiter = { res, timer: setTimeout(() => { leave(); send(res, 204); }, 25000) };
+        const leave = () => { const i = eventWaiters.indexOf(waiter); if (i >= 0) eventWaiters.splice(i, 1); clearTimeout(waiter.timer); };
+        eventWaiters.push(waiter);
+        req.on('close', leave);
         return deliver();
       }
       if (req.method === 'GET' && path === '/status') {
@@ -389,7 +449,7 @@ export function startServer({ port = defaultPort(), pollMs = 15000, connectedMs 
         port: actual, token: TOKEN, agent, pollComments,
         close: () => new Promise(done => {
           timers.forEach(clearInterval); clearTimeout(pollSoon);
-          for (const t of [...[...windows.values()].map(w => w.poller), eventWaiter, ...waiting.values()]) if (t) clearTimeout(t.timer);
+          for (const t of [...[...windows.values()].map(w => w.poller), ...eventWaiters, ...waiting.values()]) if (t) clearTimeout(t.timer);
           server.closeAllConnections(); server.close(() => done());
         }),
       });

@@ -30,8 +30,8 @@ function home() {
 // Figma REST stand-in: comments per file, POSTs recorded. access[key] = the only token that may reach that file.
 function figmaRest() {
   const comments = { FILE: [], OTHER: [], SECOND: [] }, posted = [], gets = [], tokens = [], access = {};
-  let status = 200;
-  const reply = (body, code = status) => ({ ok: code < 300, status: code, json: async () => body });
+  let status = 200, retryAfter = null;
+  const reply = (body, code = status) => ({ ok: code < 300, status: code, json: async () => body, headers: { get: name => (name.toLowerCase() === 'retry-after' ? retryAfter : null) } });
   const fetch = async (url, init = {}) => {
     const key = decodeURIComponent(url.match(/\/v1\/files\/([^/]+)\/comments$/)[1]), token = init.headers['X-Figma-Token'];
     tokens.push(key + ' ' + token);
@@ -42,7 +42,7 @@ function figmaRest() {
   };
   let n = 0;
   const add = (key, fields = {}) => { const c = { id: 'c' + (++n), order_id: String(n), message: 'Comment ' + n, user: { handle: 'Ann' }, created_at: new Date().toISOString(), client_meta: { node_id: '1:2' }, ...fields }; comments[key].push(c); return c; };
-  return { comments, posted, gets, tokens, access, fetch, add, fail: code => { status = code; } };
+  return { comments, posted, gets, tokens, access, fetch, add, fail: (code, wait = null) => { status = code; retryAfter = wait; } };
 }
 
 // The plugin window: says hello, keeps a /next long poll open and answers jobs with `answer(job)`. With `win` it is
@@ -62,7 +62,7 @@ function plugin(base, token, answer = () => 'OUTLINE', { win = null, file = 'FIL
       if (r.status !== 200) continue;
       const job = await r.json();
       jobs.push(job);
-      await fetch(base + '/result', { method: 'POST', headers: H, body: JSON.stringify({ id: job.id, ok: true, result: answer(job), images: [] }) });
+      await fetch(base + '/result', { method: 'POST', headers: H, body: JSON.stringify({ id: job.id, ok: true, result: await answer(job), images: [] }) });
     }
   })();
   const stop = async () => { controller.abort(); await loop; };
@@ -517,4 +517,175 @@ test('events nobody picked up do not pile up: 3 days, one per comment, the 200 n
   const second = await start({ agent: recordingAgent() });
   const kept = (await second.api('/events')).body;
   assert.deepEqual([kept.length, kept[0].id, kept.at(-1).id], [200, 'n50', 'n249']);
+});
+
+// ---- staying up, staying honest
+
+test('a job that takes longer than fetch waits for headers still gets its answer: headers early, spaces, then the result', async () => {
+  home();
+  const { s, base, api } = await start({ agent: recordingAgent(), headersAfterMs: 100, beatMs: 40 });
+  plugin(base, s.token, async () => { await sleep(350); return 'late'; });
+  await sleep(100);
+  const H = { 'X-Bridge-Token': s.token, 'Content-Type': 'application/json' }, t0 = Date.now();
+  const r = await fetch(base + '/job', { method: 'POST', headers: H, body: JSON.stringify({ code: 'return 1' }) });
+  const headersAt = Date.now() - t0, text = await r.text();
+  assert.ok(headersAt < 300, 'headers after ' + headersAt + ' ms, before the result at 350');
+  assert.equal(r.status, 200);
+  assert.match(text, /^ {2,}\{/, 'kept alive with whitespace, which JSON allows');
+  assert.equal(JSON.parse(text).result, 'late');
+  // A timeout after the headers went out is told by `ok`, the status is spent.
+  const none = await fetch(base + '/job', { method: 'POST', headers: H, body: JSON.stringify({ code: 'return 1', file: 'OTHER', timeoutMs: 250 }) });
+  assert.equal(none.status, 200);
+  const out = await none.json();
+  assert.equal(out.ok, false);
+  assert.match(out.error, /^timeout/);
+  // A short job is answered as before.
+  assert.equal((await api('/job', { code: 'return 1', file: 'OTHER', timeoutMs: 50 })).status, 504);
+});
+
+test('state files cut off or mangled by a crash do not keep the server from starting', async () => {
+  const h = home();
+  writeFileSync(join(h, 'data', 'events.jsonl'), '{"at":"' + new Date().toISOString() + '","type":"comment","id":"ok1","text":"kept"}\n{"at":"2026-01-01T00:00:00Z","type":"comm\n"x"\n');
+  writeFileSync(join(h, 'data', 'plan.json'), '{"not":"a list"}');
+  writeFileSync(join(h, 'data', 'seen-comments.json'), '[1,2');
+  writeFileSync(join(h, 'data', 'state.json'), '{"listen":tr');
+  const { api } = await start({ agent: recordingAgent() });
+  assert.deepEqual((await api('/plan')).body.tasks, []);
+  assert.deepEqual((await api('/events')).body.map(e => e.id), ['ok1']);
+  assert.equal((await api('/listen')).body.on, false);
+  assert.equal((await api('/plan', { add: 'still works' })).body.tasks.length, 1);
+});
+
+test('mark "#1" ticks off thread 1, not threads 10 to 19', async () => {
+  const h = home();
+  writeFileSync(join(h, 'data', 'plan.json'), JSON.stringify([
+    { text: '#1 first thread', state: 'todo', commentId: 'a', number: '1', fileKey: 'FILE' },
+    { text: '#12 twelfth thread', state: 'todo', commentId: 'b', number: '12', fileKey: 'FILE' },
+    { text: '#1 a step that only looks like a thread', state: 'todo', fileKey: 'FILE' },
+    { text: '#15 another such step', state: 'todo', fileKey: 'FILE' }]));
+  const { api } = await start({ agent: recordingAgent() });
+  const states = async mark => (await api('/plan', { file: 'FILE', mark })).body.tasks.map(t => t.state);
+  assert.deepEqual(await states('#1'), ['done', 'todo', 'done', 'todo']);
+  assert.deepEqual(await states('#12'), ['done', 'done', 'done', 'todo']);
+  assert.deepEqual(await states('#15 an'), ['done', 'done', 'done', 'done'], 'a text prefix still works');
+});
+
+test('plan entries sent as bare strings or with a stray state become proper steps that can be marked', async () => {
+  home();
+  const { api } = await start({ agent: recordingAgent() });
+  await api('/plan', { tasks: ['Bare', { text: 'Odd state', state: 'bogus' }, { state: 'active' }] });
+  await api('/plan', { add: 'Added', state: 'nonsense' });
+  const marked = await api('/plan', { mark: 'Bare', state: 'whatever' });
+  assert.equal(marked.status, 200);
+  assert.deepEqual(marked.body.tasks.map(t => [t.text, t.state]), [['Bare', 'done'], ['Odd state', 'todo'], ['', 'active'], ['Added', 'active']]);
+  assert.deepEqual((await api('/plan', { tasks: 'One step' })).body.tasks, [{ text: 'One step', state: 'todo' }]);
+});
+
+test('a rate-limited file is left alone until its pause is over, then read again', async () => {
+  home();
+  const { s, rest, base, api } = await start({ agent: recordingAgent(), backoffMs: 150 });
+  plugin(base, s.token, () => 1, { win: 'w1' });
+  await sleep(450); // past the poll the window's hello schedules, so only the polls below count
+  rest.tokens.length = 0;
+  const asked = () => rest.tokens.filter(t => t.startsWith('FILE')).length;
+  rest.fail(429);
+  await s.pollComments();
+  assert.equal(asked(), 1);
+  await s.pollComments();
+  await s.pollComments();
+  assert.equal(asked(), 1, 'asking again at once only keeps the limit in force');
+  assert.match((await api('/status')).body.comments, /^błąd: \w+: HTTP 429 \(limit zapytań, przerwa do \d\d:\d\d\)$/);
+  rest.fail(200);
+  await sleep(200);
+  await s.pollComments();
+  assert.equal(asked(), 2);
+  assert.equal((await api('/status')).body.comments, 'działa');
+});
+
+test('Retry-After from Figma sets the pause', async () => {
+  home();
+  const { s, rest, base } = await start({ agent: recordingAgent(), backoffMs: 20 });
+  plugin(base, s.token, () => 1, { win: 'w1' });
+  await sleep(450);
+  rest.tokens.length = 0;
+  const asked = () => rest.tokens.filter(t => t.startsWith('FILE')).length;
+  rest.fail(429, '1');
+  await s.pollComments();
+  await sleep(300);
+  await s.pollComments();
+  assert.equal(asked(), 1, 'the second it asked for is not over, whatever our own step says');
+  await sleep(800);
+  await s.pollComments();
+  assert.equal(asked(), 2);
+});
+
+test('seen-comments.json is written when a poll found something new, not on every poll', async () => {
+  const h = home();
+  const { s, rest, base } = await start({ agent: recordingAgent() });
+  plugin(base, s.token, () => 1, { win: 'w1' });
+  await sleep(100);
+  await s.pollComments();
+  const file = join(h, 'data', 'seen-comments.json');
+  assert.ok(existsSync(file), 'the first poll of a file records what is there');
+  rmSync(file);
+  await s.pollComments();
+  assert.ok(!existsSync(file), 'nothing new: nothing to write');
+  const c = rest.add('FILE');
+  await s.pollComments();
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).FILE[c.id], 1);
+});
+
+test('two sessions waiting for events both keep waiting; a new comment goes to the one that asked first', async () => {
+  home();
+  const { s, rest, base } = await start({ agent: recordingAgent() });
+  plugin(base, s.token, () => 1, { win: 'w1' });
+  await sleep(100);
+  await s.pollComments();
+  const H = { 'X-Bridge-Token': s.token }, stop = new AbortController();
+  cleanups.push(() => stop.abort());
+  const answered = [];
+  const wait = name => fetch(base + '/events', { headers: H, signal: stop.signal }).then(async r => answered.push([name, r.status, r.status === 200 ? (await r.json()).map(e => e.text) : null]), () => {});
+  wait('first');
+  await sleep(50);
+  wait('second');
+  await sleep(150);
+  assert.deepEqual(answered, [], 'the second one did not push the first off the line');
+  rest.add('FILE', { message: 'news' });
+  await s.pollComments();
+  await sleep(50);
+  assert.deepEqual(answered, [['first', 200, ['news']]]);
+});
+
+test('a job whose caller went away before any plugin took it leaves the queue', async () => {
+  home();
+  const { s, base, api } = await start({ agent: recordingAgent() });
+  const gone = new AbortController();
+  fetch(base + '/job', { method: 'POST', headers: { 'X-Bridge-Token': s.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: 'figma.root.name = "late"', timeoutMs: 60000 }), signal: gone.signal }).catch(() => {});
+  await sleep(100);
+  assert.equal((await api('/status')).body.queued, 1);
+  gone.abort();
+  await sleep(100);
+  assert.equal((await api('/status')).body.queued, 0, 'a plugin opened later must not run it for nobody');
+});
+
+test('a timeout longer than a timer can hold does not expire at once', async () => {
+  home();
+  const { s, base, api } = await start({ agent: recordingAgent() });
+  plugin(base, s.token, async () => { await sleep(50); return 'answered'; });
+  await sleep(100);
+  const r = await api('/job', { code: 'return 1', timeoutMs: 1e12 });
+  assert.deepEqual([r.status, r.body.result], [200, 'answered']);
+});
+
+test('GET /window gives a plugin window its plan and the listen state in one answer', async () => {
+  home();
+  const { s, base, api } = await start({ agent: recordingAgent() });
+  plugin(base, s.token, () => 1, { win: 'w1' });
+  await sleep(100);
+  await api('/plan', { file: 'FILE', add: 'Shown here' });
+  await api('/plan', { file: 'OTHER', add: 'Not here' });
+  await api('/listen', { on: true });
+  const w = await api('/window?file=FILE');
+  assert.equal(w.status, 200);
+  assert.deepEqual(w.body, { tasks: [{ text: 'Shown here', state: 'active', fileKey: 'FILE' }], listen: { on: true, listening: true, note: 'Słucham nowych komentarzy' } });
 });
