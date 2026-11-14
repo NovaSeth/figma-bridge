@@ -79,3 +79,15 @@ test('a result the window could not hand to the server at first is sent again', 
   assert.equal(failed >= 1, true);
   assert.deepEqual([r.status, r.body.result], [200, 'kept']);
 });
+
+test('the window head: a large mark with its status dot on the left, the state, bar and last step beside it', () => {
+  const html = readFileSync(new URL('../ui.template.html', import.meta.url), 'utf8');
+  const head = html.match(/<div class="head" id="state">([\s\S]*?)<label class="listen">/);
+  assert.ok(head, 'a head block holds the brand and the info column');
+  assert.match(head[1], /^<span class="brand">[\s\S]*?<span class="dot"><\/span><\/span><div class="info">/);
+  const info = head[1].slice(head[1].indexOf('<div class="info">'));
+  for (const id of ['now', 'side', 'bar', 'last']) assert.match(info, new RegExp('id="' + id + '"'), id + ' sits in the info column');
+  const size = html.match(/\.brand\{[^}]*width:(\d+)px/);
+  assert.ok(size && Number(size[1]) >= 32, 'the mark is large: ' + (size && size[1]));
+  assert.match(html, /\$\('state'\)\.className = 'head '/);
+});

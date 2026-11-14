@@ -4,9 +4,12 @@
   #root{padding:12px 14px;box-sizing:border-box;display:flex;flex-direction:column;gap:6px;
     font:12px/1.35 Inter,system-ui,-apple-system,sans-serif;color:var(--figma-color-text,#1e1e1e);background:var(--figma-color-bg,#fff);-webkit-font-smoothing:antialiased}
   .row{display:flex;align-items:center;gap:7px;min-width:0}
-  .brand{position:relative;flex:none;width:18px;height:18px;display:block}
-  .mark{width:18px;height:18px;display:block}
-  .dot{position:absolute;right:-3px;bottom:-2px;width:8px;height:8px;border-radius:50%;background:var(--figma-color-icon-tertiary,#b3b3b3);box-shadow:0 0 0 2px var(--figma-color-bg,#fff)}
+  /* Głowa okna: duży znak ze stanem po lewej, po prawej stan, pasek i ostatni krok. */
+  .head{display:flex;align-items:center;gap:12px;min-width:0}
+  .info{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+  .brand{position:relative;flex:none;width:40px;height:40px;display:block}
+  .mark{width:40px;height:40px;display:block}
+  .dot{position:absolute;right:-2px;bottom:2px;width:12px;height:12px;border-radius:50%;background:var(--figma-color-icon-tertiary,#b3b3b3);box-shadow:0 0 0 2px var(--figma-color-bg,#fff)}
   .ok .dot{background:var(--figma-color-icon-success,#14ae5c)}
   .busy .dot{background:var(--figma-color-icon-brand,#0d99ff)}
   .err .dot{background:var(--figma-color-icon-danger,#f24822)}
@@ -60,9 +63,11 @@
   #plan li.active::before{border-color:var(--figma-color-icon-brand,#0d99ff);background:var(--figma-color-icon-brand,#0d99ff)}
 </style>
 <div id="root">
-<div class="row" id="state"><span class="brand"><svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path clip-rule="evenodd" fill-rule="evenodd" fill="#D97757" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z"/></svg><span class="dot"></span></span><span id="now">Łączę z mostem</span><span id="side"></span></div>
+<div class="head" id="state"><span class="brand"><svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path clip-rule="evenodd" fill-rule="evenodd" fill="#D97757" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z"/></svg><span class="dot"></span></span><div class="info">
+<div class="row"><span id="now">Łączę z mostem</span><span id="side"></span></div>
 <div class="bar" id="bar"><span id="fill"><span id="sheen"></span></span><span id="run"></span></div>
 <div id="last">Zostaw to okno otwarte</div>
+</div></div>
 <label class="listen"><span>Claude słucha komentarzy</span><input type="checkbox" id="listen" role="switch"></label>
 <div id="listenNote"></div>
 <button id="toggle" type="button"></button>
@@ -105,7 +110,7 @@
   const render = () => {
     const active = tasks.find(t => t.state === 'active'), done = tasks.filter(t => t.state === 'done').length;
     const busy = running.size > 0;
-    $('state').className = 'row ' + (busy ? 'busy' : active ? 'busy planned' : status.kind);
+    $('state').className = 'head ' + (busy ? 'busy' : active ? 'busy planned' : status.kind);
     $('now').textContent = phrase(busy, active);
     // Jeden pasek na wszystko: zrobione kroki planu plus ułamek kroku, który właśnie trwa.
     const swiezy = Date.now() - ostatniRuch < CISZA;
