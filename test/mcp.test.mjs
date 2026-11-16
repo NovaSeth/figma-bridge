@@ -327,6 +327,18 @@ test('A01: the session of a comment (BRIDGE_FILE_ROOT) can take job files from i
   assert.equal(JSON.parse((await mcp.call('figma_run', { file: outside, noPrelude: true })).text).result, 'outside');
 });
 
+test('A01: the session of a comment (BRIDGE_FILE_ROOT) cannot delete threads', async () => {
+  // Its prompt is a comment anyone with access to the file wrote: talked round, it must not wipe other threads.
+  const before = deletes.length;
+  const fenced = startMcp({ ...env, BRIDGE_FILE_ROOT: work }, work);
+  try {
+    const r = await fenced.call('figma_comments', { remove: 'c7' });
+    assert.equal(r.isError, true);
+    assert.match(r.text, /^error: .*comment agent/);
+  } finally { await fenced.close(); }
+  assert.equal(deletes.length, before);
+});
+
 test('the plugin open in a second file: figma_status lists it, {file} switches the session to a file', async () => {
   const ui2 = startUi(readFileSync(join(home, 'app', 'ui.html'), 'utf8'), createFigma({ fileKey: 'SECONDFILE', fileName: 'Second file' }));
   const rootName = async () => JSON.parse((await mcp.call('figma_run', { code: 'return figma.root.name', noPrelude: true })).text).result;

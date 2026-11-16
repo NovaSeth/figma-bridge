@@ -245,6 +245,8 @@ return out;`;
   async figma_comments(a) {
     await ensureServer();
     if (a.remove != null) {
+      // The comment agent's session (BRIDGE_FILE_ROOT) works from untrusted comment text: deleting stays with the user's own sessions.
+      if (process.env.BRIDGE_FILE_ROOT) throw new Error('deleting threads is not open to the comment agent');
       const id = String(a.remove), s = await api('/status');
       const fileKey = commentFiles.get(id) || sessionFile(s).fileKey;
       if (!fileKey) throw new Error('no file known for comment ' + id + ': open its file in Figma');

@@ -14,7 +14,7 @@ through the Claude Bridge plugin window, which must stay open. Setup is in READM
 | `figma_run` | `code` or `file`; `dryRun`=false; `timeoutMs`=120000; `step`; `project`; `noPrelude`=false | one-line JSON; `isError` when `ok` is false |
 | `figma_screenshot` | `target`=selection \| node id \| name; `scale`=1 (0.01–4); `maxSize`=1024 (px, longest side) | `id TYPE "name" W×H <png path>` per node + an inline PNG each; 4 nodes per call |
 | `figma_plan` | `tasks` (replaces the plan; `[{text,state}]` or strings); `add`; `mark` (text prefix or `#N`); `state` todo \| active \| done; `clearDone` | `[x]` done / `[>]` active / `[ ]` todo lines, or `plan is empty` |
-| `figma_comments` | `wait`=0 (0–25 s); `replyTo` + `text` to reply; `remove` (thread id) to delete a done thread | one line per new comment, `no new comments`, `replied in thread <id> (comment <newId>)` or `deleted thread <id>` |
+| `figma_comments` | `wait`=0 (0–25 s); `replyTo` + `text` to reply; `remove` (thread id) to delete a done thread (not in the comment agent's session) | one line per new comment, `no new comments`, `replied in thread <id> (comment <newId>)` or `deleted thread <id>` |
 
 A failing tool answers `error: …` with `isError`. Plugin closed: `the Claude Bridge plugin is not open in Figma …`
 (`… in file <key> …` when the session works in a named file).
