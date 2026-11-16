@@ -4,6 +4,7 @@
 // window is open in to agent.mjs. The endpoints are listed in AGENTS.md.
 // Start: node server.mjs (install.mjs installs a LaunchAgent that keeps it running).
 import http from 'node:http';
+import vm from 'node:vm';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -11,6 +12,18 @@ import { fileURLToPath } from 'node:url';
 import { appDir, codeDir, dataDir, port as defaultPort } from './paths.mjs';
 import { createAgent } from './agent.mjs';
 import { buildPrelude, listProjects, projectFiles, projectForFile } from './project.mjs';
+
+// Figma's sandbox names a syntax error without its line ("expecting ')'"). Node compiles the job the way code.js
+// does (the body of an async function) without running it, so the answer can name the line in the job.
+export function syntaxError(code) {
+  if (typeof code !== 'string') return null;
+  try { new vm.Script('(async function (figma, shot, progress, breathe) {\n' + code + '\n})', { filename: 'job', lineOffset: -1 }); return null; }
+  catch (e) {
+    if (!(e instanceof SyntaxError) && e.name !== 'SyntaxError') return null;
+    const line = String(e.stack || '').match(/^job:(\d+)/);
+    return 'syntax error' + (line ? ', line ' + line[1] : '') + ': ' + e.message;
+  }
+}
 
 export function ensureToken(dir = dataDir()) {
   const file = join(dir, 'token.txt');
@@ -180,13 +193,13 @@ export function startServer({ port = defaultPort(), commentsPerMinute = Number(p
   const httpError = status => 'HTTP ' + status + (status === 403 || status === 404 ? ' (token bez zakresu file_comments albo bez dostępu do pliku)' : status === 429 ? ' (limit zapytań)' : '');
   // The remembered token first, then the others. A rate limit ends the round: the next token would only add to
   // it. Returns the last response, or null when no token file holds a token.
-  async function figmaRest(fileKey, init = {}) {
+  async function figmaRest(fileKey, init = {}, commentId = null) {
     const names = tokenFiles(), known = tokenFor.get(fileKey);
     let r = null;
     for (const name of names.includes(known) ? [known, ...names.filter(n => n !== known)] : names) {
       const token = tokenIn(name);
       if (!token) continue;
-      r = await figmaFetch(figmaApi + '/v1/files/' + encodeURIComponent(fileKey) + '/comments',
+      r = await figmaFetch(figmaApi + '/v1/files/' + encodeURIComponent(fileKey) + '/comments' + (commentId ? '/' + encodeURIComponent(commentId) : ''),
         { ...init, headers: { ...init.headers, 'X-Figma-Token': token }, signal: AbortSignal.timeout(REST_TIMEOUT) });
       if (r.ok) { tokenFor.set(fileKey, name); return r; }
       if (r.status === 429) return r;
@@ -206,6 +219,22 @@ export function startServer({ port = defaultPort(), commentsPerMinute = Number(p
       // poll only records what is there.
       if (c.id && seen[fileKey]) { seen[fileKey][c.id] = 1; writeFileSync(seenFile, JSON.stringify(seen)); }
       return { ok: true, id: c.id || null };
+    } catch (e) { return { ok: false, error: String(e.message || e) }; }
+  }
+
+  // Deleting a thread when its work is done: Figma removes the replies with it. The plan entry is ticked off at
+  // once, as a thread resolved in Figma would be at the next poll.
+  async function deleteThread(fileKey, commentId) {
+    if (!tokenFiles().length) return { ok: false, error: 'no figma-token.txt (run add-token.sh)' };
+    try {
+      spend();
+      const r = await figmaRest(fileKey, { method: 'DELETE' }, commentId);
+      if (!r) return { ok: false, error: 'figma-token.txt is empty (run add-token.sh)' };
+      if (!r.ok) return { ok: false, error: httpError(r.status) };
+      const t = plan.find(x => x.commentId === commentId);
+      if (t) { Object.assign(t, { state: 'done', resolved: true, doneAt: Date.now() }); savePlan(); }
+      agent.cancel(commentId);
+      return { ok: true };
     } catch (e) { return { ok: false, error: String(e.message || e) }; }
   }
 
@@ -431,6 +460,8 @@ export function startServer({ port = defaultPort(), commentsPerMinute = Number(p
         // file: only the window of that Figma file runs the job (the plugin may be open in several files).
         const f = m.file ? resolveFile(String(m.file)) : { key: null };
         if (f.error) return send(res, 400, { ok: false, error: f.error });
+        const bad = syntaxError(m.code);
+        if (bad) return send(res, 400, { ok: false, error: bad });
         // fetch() gives up on an answer whose headers, or next piece of body, take 5 minutes, while the job runs
         // on. A long job gets its headers after 4 and a space every minute: JSON may start with whitespace, so
         // the client reads the same answer, only always as 200 (it tells by `ok`).
@@ -490,6 +521,12 @@ export function startServer({ port = defaultPort(), commentsPerMinute = Number(p
         const m = await readBody(req);
         if (!m.fileKey || !m.commentId || !m.text) return send(res, 400, { ok: false, error: 'fileKey, commentId and text are required' });
         const r = await postReply(String(m.fileKey), String(m.commentId), String(m.text));
+        return send(res, r.ok ? 200 : 502, r);
+      }
+      if (req.method === 'POST' && path === '/comments/delete') {
+        const m = await readBody(req);
+        if (!m.fileKey || !m.commentId) return send(res, 400, { ok: false, error: 'fileKey and commentId are required' });
+        const r = await deleteThread(String(m.fileKey), String(m.commentId));
         return send(res, r.ok ? 200 : 502, r);
       }
       if (req.method === 'GET' && path === '/events') {

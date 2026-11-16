@@ -31,7 +31,7 @@ const p = (type, description, extra) => Object.assign({ type }, description ? { 
 const schema = (properties, required) => Object.assign({ type: 'object', properties }, required ? { required } : {});
 const STATE = p('string', null, { enum: ['todo', 'active', 'done'] });
 const TOOLS = [
-  ['figma_status', 'Plugin, file, page, selection, project, listen mode.', schema({ file: p('string', 'switch to another open file: key or name') })],
+  ['figma_status', 'Plugin, file, page, selection, project, listen mode.', schema({ file: p('string', 'switch file: key or name') })],
   ['figma_inspect', 'Outline, a line per node: type, name, id, size, auto-layout, fills, text, instance props.',
     schema({ target: p('string', 'selection (default), page, file, node id or name'), depth: p('integer', 'default 3'), maxLines: p('integer', 'default 200') })],
   ['figma_find', 'Nodes by name or text on all pages: substring or /regex/.',
@@ -39,13 +39,13 @@ const TOOLS = [
   ['figma_library', 'Variables per mode, styles, components with variants and properties.',
     schema({ kind: p('string', null, { enum: ['variables', 'styles', 'components'] }), filter: p('string', 'substring or /regex/') }, ['kind'])],
   ['figma_run', 'Run Plugin API JS as an async function body (figma, shot(node,{name,scale}), progress, breathe); return JSON. Helpers: hex solid usePage all texts byName one loadFonts variable paintVar component instance setProp cloneVariant frame text inspect find library + project preludes. Bulk or destructive edits: dryRun:true first.',
-    schema({ code: p('string'), file: p('string', 'job file instead of code'), dryRun: p('boolean'), timeoutMs: p('integer', 'default 120000'),
+    schema({ code: p('string'), file: p('string', 'job file path'), dryRun: p('boolean'), timeoutMs: p('integer', 'default 120000'),
       step: p('string', 'plan step'), noPrelude: p('boolean'), project: p('string', 'default: open file') })],
   ['figma_screenshot', 'PNG of nodes.', schema({ target: p('string', 'selection (default), node id or name'), scale: p('number', 'default 1'), maxSize: p('integer', 'px, default 1024') })],
   ['figma_plan', 'Plan in the plugin window.', schema({ tasks: p('array', 'replace: [{text,state}]'),
     add: p('string'), mark: p('string', 'text prefix or #N'), state: STATE, clearDone: p('boolean') })],
-  ['figma_comments', 'New comments (wait ≤25 s) or reply (replyTo, text).',
-    schema({ wait: p('integer'), replyTo: p('string', 'thread id'), text: p('string') })],
+  ['figma_comments', 'New comments (wait ≤25 s), reply (replyTo, text), delete a thread (remove: id).',
+    schema({ wait: p('integer'), replyTo: p('string', 'thread id'), text: p('string'), remove: p('string') })],
 ].map(([name, description, inputSchema]) => ({ name, description, inputSchema }));
 
 // ---- bridge server
@@ -244,6 +244,14 @@ return out;`;
 
   async figma_comments(a) {
     await ensureServer();
+    if (a.remove != null) {
+      const id = String(a.remove), s = await api('/status');
+      const fileKey = commentFiles.get(id) || sessionFile(s).fileKey;
+      if (!fileKey) throw new Error('no file known for comment ' + id + ': open its file in Figma');
+      const r = await api('/comments/delete', { fileKey, commentId: id });
+      if (!r.ok) throw new Error('delete failed: ' + r.error);
+      return 'deleted thread ' + id;
+    }
     if (a.replyTo != null || a.text != null) {
       if (!a.replyTo || !a.text) throw new Error('a reply needs replyTo and text');
       const id = String(a.replyTo), s = await api('/status');
@@ -313,7 +321,7 @@ function eventLine(e, currentFile) {
   if (e.fileKey) { commentFiles.set(String(e.id), e.fileKey); if (e.replyTo) commentFiles.set(String(e.replyTo), e.fileKey); }
   const text = String(e.text || '').replace(/\s+/g, ' ');
   return (e.number ? '#' + e.number + ' ' : '') + 'id=' + e.id + (e.replyTo ? ' reply-to=' + e.replyTo : '') + ' @' + (e.author || '?')
-    + (e.nodeId ? ' node=' + e.nodeId : '') + (e.fileKey && e.fileKey !== currentFile ? ' file=' + e.fileKey : '') + ': ' + (text.length > 500 ? text.slice(0, 499) + '…' : text);
+    + (e.nodeId ? ' node=' + e.nodeId + (e.offset ? '@' + Math.round(e.offset.x) + ',' + Math.round(e.offset.y) : '') : '') + (e.fileKey && e.fileKey !== currentFile ? ' file=' + e.fileKey : '') + ': ' + (text.length > 500 ? text.slice(0, 499) + '…' : text);
 }
 
 // ---- JSON-RPC over stdio

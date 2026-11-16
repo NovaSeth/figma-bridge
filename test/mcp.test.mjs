@@ -45,6 +45,7 @@ function startMcp(env, cwd) {
 }
 
 let home, work, env, bridge, ui, fx, figmaApi, api, mcp;
+const deletes = [];
 const comments = [], replies = [], cleanups = [];
 
 before(async () => {
@@ -67,9 +68,10 @@ before(async () => {
   writeFileSync(join(work, 'design', 'p.js'), 'const linked = 1;');
 
   figmaApi = http.createServer((req, res) => {
-    const m = req.url.match(/^\/v1\/files\/([^/]+)\/comments$/);
+    const m = req.url.match(/^\/v1\/files\/([^/]+)\/comments(?:\/([^/]+))?$/);
     const reply = body => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
     if (!m) { res.writeHead(404); return res.end(); }
+    if (req.method === 'DELETE') { deletes.push(m[1] + ' ' + m[2]); return reply({}); }
     if (req.method === 'POST') {
       let body = '';
       req.on('data', d => { body += d; });
@@ -278,6 +280,17 @@ test('figma_comments: waits for a new comment, then replies in its thread', asyn
   assert.equal(reply.text, 'replied in thread c7 (comment r1)');
   assert.deepEqual(replies, [{ fileKey: 'TESTFILE', body: { message: 'Done: the card is blue.', comment_id: 'c7' } }]);
   assert.equal((await mcp.call('figma_comments', { replyTo: 'c7' })).isError, true);
+});
+
+test('figma_comments: a pin shows where on the node it sits; remove deletes the thread', async () => {
+  comments.push({ fileKey: 'TESTFILE', id: 'c8', order_id: 8, message: 'Bigger', user: { handle: 'alice' }, client_meta: { node_id: fx.card.id, node_offset: { x: 120.4, y: 33.6 } }, created_at: '2026-01-01T00:00:01Z' });
+  const waited = mcp.call('figma_comments', { wait: 10 });
+  await sleep(200);
+  await api('/hello', { fileKey: 'TESTFILE', fileName: 'Test file' });
+  assert.equal((await waited).text, '#8 id=c8 @alice node=' + fx.card.id + '@120,34: Bigger');
+  assert.equal((await mcp.call('figma_comments', { remove: 'c8' })).text, 'deleted thread c8');
+  assert.deepEqual(deletes, ['TESTFILE c8']);
+  assert.equal((await mcp.call('figma_plan', { clearDone: true })).text, '[ ] #7 Make the card blue');
 });
 
 test('A03 injection: tool arguments reach the plugin as data, never as code', async () => {

@@ -31,20 +31,21 @@ function home() {
 
 // Figma REST stand-in: comments per file, POSTs recorded. access[key] = the only token that may reach that file.
 function figmaRest() {
-  const comments = { FILE: [], OTHER: [], SECOND: [] }, posted = [], gets = [], tokens = [], access = {};
+  const comments = { FILE: [], OTHER: [], SECOND: [] }, posted = [], deleted = [], gets = [], tokens = [], access = {};
   let status = 200, retryAfter = null;
   const reply = (body, code = status) => ({ ok: code < 300, status: code, json: async () => body, headers: { get: name => (name.toLowerCase() === 'retry-after' ? retryAfter : null) } });
   const fetch = async (url, init = {}) => {
-    const key = decodeURIComponent(url.match(/\/v1\/files\/([^/]+)\/comments$/)[1]), token = init.headers['X-Figma-Token'];
+    const m = url.match(/\/v1\/files\/([^/]+)\/comments(?:\/([^/]+))?$/), key = decodeURIComponent(m[1]), token = init.headers['X-Figma-Token'];
     tokens.push(key + ' ' + token);
     if (access[key] && access[key] !== token) return reply({}, 403);
+    if (init.method === 'DELETE') { deleted.push(key + ' ' + decodeURIComponent(m[2])); return reply({}); }
     if (init.method === 'POST') { posted.push({ key, token, ...JSON.parse(init.body) }); return reply({ id: 'r' + posted.length }); }
     gets.push(key);
     return reply({ comments: comments[key] || [] });
   };
   let n = 0;
   const add = (key, fields = {}) => { const c = { id: 'c' + (++n), order_id: String(n), message: 'Comment ' + n, user: { handle: 'Ann' }, created_at: new Date().toISOString(), client_meta: { node_id: '1:2' }, ...fields }; comments[key].push(c); return c; };
-  return { comments, posted, gets, tokens, access, fetch, add, fail: (code, wait = null) => { status = code; retryAfter = wait; } };
+  return { comments, posted, deleted, gets, tokens, access, fetch, add, fail: (code, wait = null) => { status = code; retryAfter = wait; } };
 }
 
 // The plugin window: says hello, keeps a /next long poll open and answers jobs with `answer(job)`. With `win` it is
@@ -174,6 +175,49 @@ test('the toggle survives a server restart; status shows it', async () => {
   assert.ok(JSON.stringify((await second.api('/listen')).body).length <= 80);
   assert.ok(JSON.stringify(status).length <= 300, JSON.stringify(status).length);
   await second.s.close();
+});
+
+test('POST /comments/delete removes a thread in Figma and ticks its plan entry off', async () => {
+  home();
+  const agent = recordingAgent();
+  const { s, rest, base, api } = await start({ agent });
+  const p = plugin(base, s.token);
+  await sleep(100);
+  await s.pollComments();
+  const c = rest.add('FILE', { message: 'Make it blue' });
+  await s.pollComments();
+  assert.equal((await api('/plan')).body.tasks.find(t => t.commentId === c.id).state, 'todo');
+  const r = await api('/comments/delete', { fileKey: 'FILE', commentId: c.id });
+  assert.deepEqual(r, { status: 200, body: { ok: true } });
+  assert.deepEqual(rest.deleted, ['FILE ' + c.id]);
+  const entry = (await api('/plan')).body.tasks.find(t => t.commentId === c.id);
+  assert.equal(entry.state, 'done');
+  assert.equal(entry.resolved, true);
+  assert.ok(agent.calls.includes('cancel ' + c.id));
+  assert.equal((await api('/comments/delete', { fileKey: 'FILE' })).status, 400);
+  rest.fail(403);
+  const denied = await api('/comments/delete', { fileKey: 'FILE', commentId: c.id });
+  assert.equal(denied.status, 502);
+  assert.match(denied.body.error, /^HTTP 403/);
+  await p.stop();
+  await s.close();
+});
+
+test('POST /job: a job that does not parse is refused with its line, and never queued', async () => {
+  home();
+  const { s, base, api } = await start({ agent: recordingAgent() });
+  const p = plugin(base, s.token);
+  await sleep(100);
+  const r = await api('/job', { code: '//# Broken\nconst a = 1;\nfoo(a;\nreturn a;', timeoutMs: 2000 });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.ok, false);
+  assert.match(r.body.error, /^syntax error, line 3: /);
+  assert.equal(p.jobs.length, 0);
+  // Code the plugin accepts still runs: return and await at the top, a label line.
+  const ok = await api('/job', { code: '//# Fine\nawait 1;\nreturn 2;', timeoutMs: 2000 });
+  assert.equal(ok.body.ok, true);
+  await p.stop();
+  await s.close();
 });
 
 test('POST /comments/reply answers in a thread; our own reply is not a new comment', async () => {

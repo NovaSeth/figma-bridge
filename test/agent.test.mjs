@@ -75,6 +75,8 @@ test('comment text is inserted verbatim, unknown placeholders stay as written', 
 test('the built-in prompt uses every placeholder and names the MCP tools, not scripts', () => {
   for (const key of ['fileName', 'fileKey', 'number', 'author', 'text', 'nodeId', 'where', 'inspect']) assert.match(DEFAULT_PROMPT, new RegExp('\\{\\{#?' + key + '\\}\\}'));
   assert.match(DEFAULT_PROMPT, /figma_run with dryRun:true first/);
+  // A hand edit in a file built by scripts is lost on the next rebuild, and code taken from the scripts never has it.
+  assert.match(DEFAULT_PROMPT, /job scripts[^.]*change the script and re-run it/);
   assert.doesNotMatch(DEFAULT_PROMPT, /run\.mjs/);
   assert.ok(DEFAULT_PROMPT.length < 1100, 'the prompt is paid for on every comment: ' + DEFAULT_PROMPT.length);
 });

@@ -18,6 +18,7 @@ Outline of the pinned node:
 Work in Figma through the figma-bridge tools (figma_inspect, figma_find, figma_library, figma_run, figma_screenshot).
 Bulk or destructive edits: figma_run with dryRun:true first. Check every change with figma_screenshot.
 When the change concerns a shared pattern, fix the component, not single instances.
+When the folder holds the job scripts that build this file, change the script and re-run it: a hand edit is lost on the next rebuild.
 Do what the comment asks, nothing more. End with one sentence, in the language of the comment, saying what you did.`;
 
 // {{key}} → value. {{#key}}…{{/key}} keeps its inside only when key has a value, so wording stays in the

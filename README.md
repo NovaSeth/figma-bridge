@@ -106,7 +106,7 @@ MCP sam go uruchomi.
 | `figma_run` | wynik skryptu JS Plugin API jako JSON w jednej linii: `{ok, result \| error, images, dryRun, dryRunReport, project}` | `code` albo `file`; `dryRun` false; `timeoutMs` 120000; `step`; `project`; `noPrelude` |
 | `figma_screenshot` | PNG w odpowiedzi (do 4 węzłów) i ścieżki plików w `data/out/` | `target` (jak w inspect, bez stron); `scale` 1; `maxSize` 1024 px (dłuższy bok) |
 | `figma_plan` | plan pliku sesji (ten, który pokazuje okno wtyczki w tym pliku) jako lista `[x]` / `[>]` / `[ ]` | `tasks` (zastępuje plan pliku; wpisy otwartych wątków zostają); `add`; `mark` (początek tekstu albo `#N`) z `state` `todo` / `active` / `done`; `clearDone` |
-| `figma_comments` | nowe komentarze, po linii na każdy, albo odpowiedź w wątku | `wait` 0–25 s; `replyTo` i `text` |
+| `figma_comments` | nowe komentarze, po linii na każdy (z miejscem pinezki na węźle), odpowiedź w wątku albo usunięcie zrobionego wątku | `wait` 0–25 s; `replyTo` i `text`; `remove` (id wątku) |
 
 Przykład, `figma_inspect {target: "1:19", depth: 2}`:
 

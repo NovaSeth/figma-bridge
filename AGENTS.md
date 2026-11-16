@@ -14,7 +14,7 @@ through the Claude Bridge plugin window, which must stay open. Setup is in READM
 | `figma_run` | `code` or `file`; `dryRun`=false; `timeoutMs`=120000; `step`; `project`; `noPrelude`=false | one-line JSON; `isError` when `ok` is false |
 | `figma_screenshot` | `target`=selection \| node id \| name; `scale`=1 (0.01–4); `maxSize`=1024 (px, longest side) | `id TYPE "name" W×H <png path>` per node + an inline PNG each; 4 nodes per call |
 | `figma_plan` | `tasks` (replaces the plan; `[{text,state}]` or strings); `add`; `mark` (text prefix or `#N`); `state` todo \| active \| done; `clearDone` | `[x]` done / `[>]` active / `[ ]` todo lines, or `plan is empty` |
-| `figma_comments` | `wait`=0 (0–25 s); `replyTo` + `text` to reply | one line per new comment, `no new comments`, or `replied in thread <id> (comment <newId>)` |
+| `figma_comments` | `wait`=0 (0–25 s); `replyTo` + `text` to reply; `remove` (thread id) to delete a done thread | one line per new comment, `no new comments`, `replied in thread <id> (comment <newId>)` or `deleted thread <id>` |
 
 A failing tool answers `error: …` with `isError`. Plugin closed: `the Claude Bridge plugin is not open in Figma …`
 (`… in file <key> …` when the session works in a named file).
@@ -130,7 +130,7 @@ styles      TEXT 2
               Body/M Inter/Regular/15 lh20
 components  Components 1                           (page name, count)
               1:18 SET "Button" {Kind=Primary|Secondary,Label:text="OK"} — Main actions.
-comments    #12 id=<id> [reply-to=<root id>] @author [node=<id>] [file=<key> when not the open file]: text (≤500 chars)
+comments    #12 id=<id> [reply-to=<root id>] @author [node=<id>[@x,y pin offset]] [file=<key> when not the open file]: text (≤500 chars)
 ```
 
 ## Pitfalls
@@ -201,13 +201,14 @@ comments    #12 id=<id> [reply-to=<root id>] @author [node=<id>] [file=<key> whe
 | `GET /next?win=<id>&file=<key>` | a plugin window's long poll (25 s): answers a job `{id, code, label, dryRun, prelude, timeoutMs}` or 204 |
 | `POST /hello {win, openedAt, fileKey, fileName}` | a window names its file; the window opened last is the current one |
 | `POST /result {id, ok, result, error, images, dryRun}` | a window's answer to a job |
-| `POST /job {code, label, timeoutMs, dryRun, prelude, file}` | runs a job; answers its result, 504 on timeout, 400 for an unknown `file`; after 4 minutes the headers go out and the body starts with spaces |
+| `POST /job {code, label, timeoutMs, dryRun, prelude, file}` | runs a job; answers its result, 504 on timeout, 400 for an unknown `file` or a job that does not parse (`syntax error, line N: …`, counted in the job); after 4 minutes the headers go out and the body starts with spaces |
 | `GET /status` | `{connected, pluginSeenMsAgo, queued, pendingEvents, file, files (when several are open), comments, listen, agent}` |
 | `GET /plan[?file=<key>]`, `POST /plan {file, tasks, add, mark, state, clearDone}` | the plan: all of it, one file's, or a change to one file's |
 | `GET /window?file=<key>` | `{tasks, listen}`: what a plugin window shows, asked every 2 s |
 | `GET /listen`, `POST /listen {on}` | the comment-mode toggle |
 | `GET /events` | long poll (25 s) for new comment events; waiters queue |
 | `POST /comments/reply {fileKey, commentId, text}` | answers in a thread with the token that reaches the file |
+| `POST /comments/delete {fileKey, commentId}` | deletes a thread in Figma (replies go with it) and ticks its plan entry off |
 
 - A plugin window is known by its id. An open window always has a poll waiting (it asks again at once, also
   while a job runs), so one without a poll for 10 s counts as closed; a window without `?win=` (older code) has

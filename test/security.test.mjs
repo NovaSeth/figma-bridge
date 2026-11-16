@@ -54,7 +54,7 @@ test('A01/A07: every endpoint refuses a request without the bridge token, and do
   const { s, api } = await start();
   const wrong = [{}, { 'X-Bridge-Token': '' }, { 'X-Bridge-Token': 'x' }, { 'X-Bridge-Token': s.token.slice(0, -1) + (s.token.endsWith('0') ? '1' : '0') },
     { 'X-Bridge-Token': s.token + '0' }, { Authorization: 'Bearer ' + s.token }, { Cookie: 'token=' + s.token }];
-  const posts = { '/job': { code: 'return 1', timeoutMs: 50 }, '/plan': { add: 'sneaked in' }, '/listen': { on: true }, '/hello': { fileKey: 'EVIL' }, '/result': { id: 'x' }, '/comments/reply': { fileKey: 'F', commentId: '1', text: 'x' } };
+  const posts = { '/job': { code: 'return 1', timeoutMs: 50 }, '/plan': { add: 'sneaked in' }, '/listen': { on: true }, '/hello': { fileKey: 'EVIL' }, '/result': { id: 'x' }, '/comments/reply': { fileKey: 'F', commentId: '1', text: 'x' }, '/comments/delete': { fileKey: 'F', commentId: '1' } };
   for (const headers of wrong) {
     for (const path of ['/status', '/next', '/events', '/plan', '/listen', '/window?file=FILE', '/nope']) assert.equal((await api(path, undefined, headers)).status, 401, 'GET ' + path + ' ' + JSON.stringify(headers));
     for (const [path, body] of Object.entries(posts)) assert.deepEqual(await api(path, body, { ...headers, 'Content-Type': 'application/json' }), { status: 401, body: { error: 'bad token' } }, 'POST ' + path);
